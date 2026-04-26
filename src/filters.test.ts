@@ -3,7 +3,7 @@
  */
 
 import { test, expect } from 'bun:test';
-import { matches } from './filters.js';
+import { matches, and, or, not, substring, regex } from './filters.js';
 import type { RoutedSpan } from './types.js';
 
 const base: RoutedSpan = {
@@ -63,4 +63,74 @@ test('!= and == operators', () => {
   expect(matches({ ...base, attributes: { foo: 'bar' } }, { foo: '!=baz' })).toBe(true);
   expect(matches({ ...base, attributes: { foo: 'bar' } }, { foo: '!=bar' })).toBe(false);
   expect(matches({ ...base, attributes: { foo: 'bar' } }, { foo: '==bar' })).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// Combinators
+// ---------------------------------------------------------------------------
+
+test('and() requires every sub-spec', () => {
+  const span = { ...base, attributes: { 'gen_ai.system': 'anthropic', 'llm.cost.total': 0.5 } };
+  expect(matches(span, and({ 'gen_ai.system': 'anthropic' }, { 'llm.cost.total': '>0.1' }))).toBe(true);
+  expect(matches(span, and({ 'gen_ai.system': 'anthropic' }, { 'llm.cost.total': '>0.9' }))).toBe(false);
+});
+
+test('or() succeeds on any sub-spec', () => {
+  const span = { ...base, attributes: { 'db.system': 'postgresql' } };
+  expect(matches(span, or({ 'db.system': 'mysql' }, { 'db.system': 'postgresql' }))).toBe(true);
+  expect(matches(span, or({ 'db.system': 'mysql' }, { 'db.system': 'sqlite'    }))).toBe(false);
+});
+
+test('not() inverts', () => {
+  const span = { ...base, attributes: { 'db.system': 'postgresql' } };
+  expect(matches(span, not({ 'db.system': 'mysql'      }))).toBe(true);
+  expect(matches(span, not({ 'db.system': 'postgresql' }))).toBe(false);
+});
+
+test('and(or, not) composes', () => {
+  // (gen_ai.system in {anthropic, openai}) AND NOT (status_code = ERROR)
+  const ok = { ...base, attributes: { 'gen_ai.system': 'anthropic' } };
+  const err = { ...ok, status: { code: 'ERROR' as const, message: 'x' } };
+  const otherProvider = { ...base, attributes: { 'gen_ai.system': 'cohere' } };
+
+  const spec = and(
+    or({ 'gen_ai.system': 'anthropic' }, { 'gen_ai.system': 'openai' }),
+    not({ status_code: 'ERROR' }),
+  );
+  expect(matches(ok, spec)).toBe(true);
+  expect(matches(err, spec)).toBe(false);
+  expect(matches(otherProvider, spec)).toBe(false);
+});
+
+test('substring() on attribute', () => {
+  const span = { ...base, attributes: { 'http.url': 'https://api.anthropic.com/v1/messages' } };
+  expect(matches(span, substring('http.url', 'anthropic'))).toBe(true);
+  expect(matches(span, substring('http.url', 'openai'))).toBe(false);
+  expect(matches(span, substring('http.url', 'ANTHROPIC'))).toBe(false);
+  expect(matches(span, substring('http.url', 'ANTHROPIC', true))).toBe(true);
+});
+
+test('substring() on top-level field (name)', () => {
+  expect(matches({ ...base, name: 'chat anthropic' }, substring('name', 'anthropic'))).toBe(true);
+  expect(matches({ ...base, name: 'chat anthropic' }, substring('name', 'openai'))).toBe(false);
+});
+
+test('regex() on attribute', () => {
+  const span = { ...base, attributes: { 'http.url': 'https://api.anthropic.com/v1/messages' } };
+  expect(matches(span, regex('http.url', /\.anthropic\./))).toBe(true);
+  expect(matches(span, regex('http.url', '^https://'))).toBe(true);
+  expect(matches(span, regex('http.url', '\\.openai\\.'))).toBe(false);
+});
+
+test('array form supports MatchOp entries', () => {
+  // OR of plain spec + a MatchOp: matches if either branch matches
+  const span = { ...base, name: 'chat openai' };
+  expect(matches(span, [{ 'gen_ai.system': 'anthropic' }, substring('name', 'openai')])).toBe(true);
+});
+
+test('combinators handle missing keys gracefully', () => {
+  // substring/regex on absent attribute → no match (not crash)
+  expect(matches(base, substring('http.url', 'anything'))).toBe(false);
+  expect(matches(base, regex('http.url', '.*'))).toBe(false);
+  expect(matches(base, not({ 'absent.key': '*' }))).toBe(true);
 });
