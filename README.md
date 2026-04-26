@@ -3,7 +3,7 @@
 > **The OTel router for agent telemetry.**
 > Already paying for Phoenix *and* Braintrust *and* Datadog? Stop writing per-vendor integration code. **One OTel emit, declarative fanout, swap sinks via config.**
 
-🚧 v0.0.2 — APIs may change. MIT.
+🚧 v0.0.3 — APIs may change. MIT.
 
 ```ts
 import { NodeSDK } from '@opentelemetry/sdk-node';
@@ -147,6 +147,41 @@ About to add `{ match: { 'llm.cost.total': '>0.5' }, to: ['cost-alerts'] }`. Wil
 
 Planned: Sentry, OpenPipe, console pretty-printer, S3/GCS object-store, generic webhook helper.
 
+## Privacy: vendors see fakes, you keep the real
+
+`agent-otel/privacy` wraps any sink so spans are PII-masked before consumption. Powered by [`pii-proxy`](https://github.com/mirkokiefer/pii-proxy) — replaces real PII with plausible fakes (not tokens, so LLM reasoning quality is preserved) via a bijective map. Real values stay in your canonical archive; vendors only ever see the fakes; round-tripping LLM responses still works because the map unmasks them back.
+
+```ts
+import { withPrivacy, PrivacyProxy } from 'agent-otel/privacy';
+
+const proxy = new PrivacyProxy();  // shared across wrapped sinks → consistent fakes
+
+const router = defineRouter({
+  sinks: {
+    archive:    jsonl({ path: './canonical.jsonl' }),       // RAW
+    phoenix:    withPrivacy(phoenix({ ... }), { proxy }),    // MASKED
+    braintrust: withPrivacy(braintrust({ ... }), { proxy }), // MASKED — same fakes as Phoenix
+  },
+  rules: [{ match: '*', to: ['archive', 'phoenix', 'braintrust'] }],
+});
+```
+
+Output (real run):
+
+```
+ARCHIVE     → "to": "mirko@kiefer.com", "tracking": "AETH0000345323DY"
+PHOENIX     → "to": "laney_oconner@yahoo.com", "tracking": "IAUT1212493063GN"
+BRAINTRUST  → "to": "laney_oconner@yahoo.com", "tracking": "IAUT1212493063GN"  ← same fakes!
+```
+
+Knobs:
+- `redactKeys` — hard-redact specific attribute keys (auth tokens, secrets) instead of masking
+- `passthroughKeys` — skip masking for non-PII keys that pii-proxy might over-detect
+- `maskNames` — also mask span name + status_message (default: false)
+- Map is JSON-serializable via `exportProxyMap` / `importProxyMap` for cross-process persistence
+
+This composition is uniquely ours. Phoenix/Braintrust/Datadog don't offer it. The OTel Collector has destructive redaction processors only — non-reversible. Reversible privacy + multi-vendor routing has not existed until now.
+
 ## Filter grammar
 
 Match expressions for routing rules. Keys are OTel attribute paths or top-level fields (`kind`, `status_code`).
@@ -176,7 +211,7 @@ Multiple **rules** matching the same span union their target sinks.
 
 ## Status
 
-**v0.0.2 — pre-alpha.** Core router, six reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack), replay primitive (re-route flavor). API will change. Open issues, send PRs.
+**v0.0.3 — pre-alpha.** Core router, six reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack), replay primitive (re-route flavor), reversible PII masking via `agent-otel/privacy` (composes with pii-proxy). API will change. Open issues, send PRs.
 
 The package is independent — no required hosted account, no preferred backend. Use it with whatever stack.
 

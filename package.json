@@ -1,21 +1,22 @@
 {
   "name": "agent-otel",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".":                  "./src/index.ts",
-    "./sinks":            "./src/sinks/index.ts",
-    "./sinks/otlp":       "./src/sinks/otlp.ts",
-    "./sinks/jsonl":      "./src/sinks/jsonl.ts",
-    "./sinks/memory":     "./src/sinks/memory.ts",
-    "./sinks/phoenix":    "./src/sinks/phoenix.ts",
+    ".": "./src/index.ts",
+    "./sinks": "./src/sinks/index.ts",
+    "./sinks/otlp": "./src/sinks/otlp.ts",
+    "./sinks/jsonl": "./src/sinks/jsonl.ts",
+    "./sinks/memory": "./src/sinks/memory.ts",
+    "./sinks/phoenix": "./src/sinks/phoenix.ts",
     "./sinks/braintrust": "./src/sinks/braintrust.ts",
-    "./sinks/slack":      "./src/sinks/slack.ts",
-    "./replay":           "./src/replay.ts"
+    "./sinks/slack": "./src/sinks/slack.ts",
+    "./replay": "./src/replay.ts",
+    "./privacy": "./src/privacy.ts"
   },
   "files": [
     "src",
@@ -54,5 +55,8 @@
     "@opentelemetry/sdk-node": "^0.212.0",
     "@types/bun": "latest",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "pii-proxy": "^0.1.0"
   }
 }
