@@ -3,7 +3,7 @@
 > **The OTel router for agent telemetry.**
 > Already paying for Phoenix *and* Braintrust *and* Datadog? Stop writing per-vendor integration code. **One OTel emit, declarative fanout, swap sinks via config.**
 
-🚧 v0.0.4 — APIs may change. MIT.
+🚧 v0.0.5 — APIs may change. MIT.
 
 ```ts
 import { NodeSDK } from '@opentelemetry/sdk-node';
@@ -143,6 +143,7 @@ About to add `{ match: { 'llm.cost.total': '>0.5' }, to: ['cost-alerts'] }`. Wil
 | Slack | `agent-otel/sinks/slack` | Posts spans as messages to a Slack incoming webhook. Built-in rate limiting. Pretty default formatter; bring your own. |
 | Generic OTLP | `agent-otel/sinks/otlp` | Any OTLP/HTTP endpoint. Works with Honeycomb, Datadog, Tempo, Jaeger v2, LangSmith, Langfuse, anything that speaks OTLP. Defaults to protobuf via the official OTel exporter (the format virtually all OTLP receivers require); JSON available as fallback. |
 | S3 (and S3-compatible) | `agent-otel/sinks/s3` | Gzipped JSONL upload to S3 / R2 / MinIO / Backblaze. The cheap canonical archive sink. `@aws-sdk/client-s3` is an optional peer dep — install only if you use this sink. |
+| Postgres | `agent-otel/sinks/postgres` | Insert spans into a Postgres table. Default OTel-canonical schema (or BYO via `columnMapper`). `ON CONFLICT (span_id) DO UPDATE` with JSONB attribute merge — composes safely with engine-side triggers that may bootstrap rows with a partial column set. BYO query function or `url`. `postgres` is an optional peer dep — only required when using `url`. |
 | In-memory | `agent-otel/sinks/memory` | JS array. Tests and replay. |
 | JSONL file | `agent-otel/sinks/jsonl` | Append per span to a local file. Single-process. |
 
@@ -212,7 +213,7 @@ Multiple **rules** matching the same span union their target sinks.
 
 ## Status
 
-**v0.0.4 — pre-alpha.** Core router, seven reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3), replay primitive (re-route flavor), reversible PII masking via `agent-otel/privacy` (composes with pii-proxy). 21 unit tests + 5 end-to-end tests against real backends (Phoenix, OTLP, S3 via R2, Braintrust, Slack). API will change. Open issues, send PRs.
+**v0.0.5 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay primitive (re-route flavor), reversible PII masking via `agent-otel/privacy` (composes with pii-proxy). 21 unit tests + 6 end-to-end tests against real backends (Phoenix, OTLP, S3 via R2, Braintrust, Slack, Postgres). API will change. Open issues, send PRs.
 
 ## Tests
 
