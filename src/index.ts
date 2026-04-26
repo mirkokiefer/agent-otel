@@ -1,8 +1,9 @@
 /**
- * `@daslab/agent-otel` — OTel router for agent telemetry.
+ * `agent-otel` — OTel router for agent telemetry.
  *
- *   import { defineRouter } from '@daslab/agent-otel';
- *   import { jsonl, memory, otlp } from '@daslab/agent-otel/sinks';
+ *   import { defineRouter } from 'agent-otel';
+ *   import { jsonl, memory, otlp, phoenix, braintrust, slack } from 'agent-otel/sinks';
+ *   import { replay, fromJsonl } from 'agent-otel/replay';
  *
  *   const router = defineRouter({
  *     sinks: { archive: jsonl({ path: './traces.jsonl' }), apm: otlp({ url: '...' }) },
@@ -13,6 +14,9 @@
  *   });
  *
  *   const sdk = new NodeSDK({ spanProcessors: [router.asSpanProcessor()] });
+ *
+ *   // ...later, replay archived spans through new sinks:
+ *   await replay({ source: fromJsonl('./traces.jsonl'), router: anotherRouter });
  */
 
 export { defineRouter, Router } from './router.js';
