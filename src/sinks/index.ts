@@ -10,3 +10,4 @@ export { otlp,       type OtlpSinkOptions }                    from './otlp.js';
 export { phoenix,    type PhoenixSinkOptions }                 from './phoenix.js';
 export { braintrust, type BraintrustSinkOptions }              from './braintrust.js';
 export { slack,      type SlackSinkOptions, type SlackMessage } from './slack.js';
+export { s3,         type S3SinkOptions }                       from './s3.js';
