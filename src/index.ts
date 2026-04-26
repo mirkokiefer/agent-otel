@@ -22,6 +22,8 @@
 export { defineRouter, Router } from './router.js';
 export { matches, and, or, not, substring, regex } from './filters.js';
 export { isInspectable } from './types.js';
+export { RemoteInspectable } from './remote.js';
+export type { RemoteInspectableOptions } from './remote.js';
 export {
   buildTree,
   causalChain,
