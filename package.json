@@ -18,10 +18,16 @@
     "./sinks/s3": "./src/sinks/s3.ts",
     "./sinks/postgres": "./src/sinks/postgres.ts",
     "./replay": "./src/replay.ts",
-    "./privacy": "./src/privacy.ts"
+    "./privacy": "./src/privacy.ts",
+    "./tree": "./src/trace-tree.ts",
+    "./cli":  "./src/cli.ts"
+  },
+  "bin": {
+    "scry": "./bin/scry"
   },
   "files": [
     "src",
+    "bin",
     "README.md",
     "LICENSE"
   ],

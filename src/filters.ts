@@ -7,7 +7,7 @@
  * to it instead.
  */
 
-import type { MatchSpec, RoutedSpan, AttrValue } from './types.js';
+import type { MatchSpec, MatchOp, RoutedSpan, AttrValue } from './types.js';
 
 /** Fields on RoutedSpan that match-by-name keys can refer to directly. */
 const TOP_LEVEL_FIELDS = new Set(['kind', 'status_code', 'name', 'span_kind']);
@@ -90,14 +90,81 @@ function matchObject(
   return true;
 }
 
-/** True if `span` matches `spec`. Multiple keys in spec are AND'd. */
+function isMatchOp(spec: unknown): spec is MatchOp {
+  return typeof spec === 'object' && spec !== null && 'op' in spec
+      && typeof (spec as { op: unknown }).op === 'string';
+}
+
+function matchOp(span: RoutedSpan, op: MatchOp): boolean {
+  switch (op.op) {
+    case 'and':       return op.specs.every(s => matches(span, s));
+    case 'or':        return op.specs.some( s => matches(span, s));
+    case 'not':       return !matches(span, op.spec);
+    case 'substring': {
+      const actual = readAttrOrField(span, op.key);
+      if (actual === undefined) return false;
+      const a = op.ignoreCase ? String(actual).toLowerCase() : String(actual);
+      const b = op.ignoreCase ? op.value.toLowerCase()        : op.value;
+      return a.includes(b);
+    }
+    case 'regex': {
+      const actual = readAttrOrField(span, op.key);
+      if (actual === undefined) return false;
+      return new RegExp(op.pattern, op.flags).test(String(actual));
+    }
+  }
+}
+
+function readAttrOrField(span: RoutedSpan, key: string): AttrValue | undefined {
+  if (TOP_LEVEL_FIELDS.has(key)) return readField(span, key);
+  return readAttribute(span, key);
+}
+
+/** True if `span` matches `spec`. Multiple keys in a flat spec are AND'd. */
 export function matches(span: RoutedSpan, spec: MatchSpec): boolean {
   if (spec === '*') return true;
+  if (isMatchOp(spec)) return matchOp(span, spec);
 
   if (Array.isArray(spec)) {
-    // OR: any sub-spec matches
-    return spec.some(s => (s === '*' ? true : matchObject(span, s)));
+    // Array form is OR — any sub-spec matches
+    return spec.some(s => {
+      if (s === '*') return true;
+      if (isMatchOp(s)) return matchOp(span, s);
+      return matchObject(span, s);
+    });
   }
 
   return matchObject(span, spec);
+}
+
+// ---------------------------------------------------------------------------
+// Combinator constructors
+// ---------------------------------------------------------------------------
+
+/** AND — span matches every sub-spec. */
+export function and(...specs: MatchSpec[]): MatchOp {
+  return { op: 'and', specs };
+}
+
+/** OR — span matches any sub-spec. */
+export function or(...specs: MatchSpec[]): MatchOp {
+  return { op: 'or', specs };
+}
+
+/** NOT — span does not match `spec`. */
+export function not(spec: MatchSpec): MatchOp {
+  return { op: 'not', spec };
+}
+
+/** Substring containment on an attribute or top-level field value. */
+export function substring(key: string, value: string, ignoreCase = false): MatchOp {
+  return { op: 'substring', key, value, ignoreCase };
+}
+
+/** Regex match on an attribute or top-level field value. */
+export function regex(key: string, pattern: string | RegExp, flags?: string): MatchOp {
+  if (pattern instanceof RegExp) {
+    return { op: 'regex', key, pattern: pattern.source, flags: flags ?? pattern.flags };
+  }
+  return { op: 'regex', key, pattern, flags };
 }
