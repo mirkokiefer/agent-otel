@@ -15,15 +15,18 @@
         "@opentelemetry/sdk-node": "^0.212.0",
         "@opentelemetry/sdk-trace-base": "^2.0.0",
         "@types/bun": "latest",
+        "postgres": "^3.4.9",
         "typescript": "^5.6.0",
       },
       "peerDependencies": {
         "@aws-sdk/client-s3": "^3.0.0",
         "@opentelemetry/api": "^1.9.0",
+        "@opentelemetry/exporter-trace-otlp-proto": "^0.200.0",
         "@opentelemetry/sdk-trace-base": "^2.0.0",
       },
       "optionalPeers": [
         "@aws-sdk/client-s3",
+        "@opentelemetry/exporter-trace-otlp-proto",
       ],
     },
   },
@@ -347,6 +350,8 @@
     "path-expression-matcher": ["path-expression-matcher@1.5.0", "", {}, "sha512-cbrerZV+6rvdQrrD+iGMcZFEiiSrbv9Tfdkvnusy6y0x0GKBXREFg/Y65GhIfm0tnLntThhzCnfKwp1WRjeCyQ=="],
 
     "pii-proxy": ["pii-proxy@0.1.0", "", { "dependencies": { "@faker-js/faker": "^9.0.0" } }, "sha512-fwI2yZP8qZjyWgNbtDARpqd7HFp4qtThzz+CpsCKC7zoZ+FM0zKUUBaX8gGnyumwUFSfbJ+/5+l8hIusmij0Qw=="],
+
+    "postgres": ["postgres@3.4.9", "", {}, "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="],
 
     "protobufjs": ["protobufjs@8.0.1", "", { "dependencies": { "@protobufjs/aspromise": "^1.1.2", "@protobufjs/base64": "^1.1.2", "@protobufjs/codegen": "^2.0.4", "@protobufjs/eventemitter": "^1.1.0", "@protobufjs/fetch": "^1.1.0", "@protobufjs/float": "^1.0.2", "@protobufjs/inquire": "^1.1.0", "@protobufjs/path": "^1.1.2", "@protobufjs/pool": "^1.1.0", "@protobufjs/utf8": "^1.1.0", "@types/node": ">=13.7.0", "long": "^5.0.0" } }, "sha512-NWWCCscLjs+cOKF/s/XVNFRW7Yih0fdH+9brffR5NZCy8k42yRdl5KlWKMVXuI1vfCoy4o1z80XR/W/QUb3V3w=="],
 
