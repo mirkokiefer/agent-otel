@@ -28,6 +28,7 @@ import {
 } from './trace-tree.js';
 import { postgres as postgresSink } from './sinks/postgres.js';
 import { and as andMatch } from './filters.js';
+import { RemoteInspectable } from './remote.js';
 import type { Inspectable, MatchSpec, RoutedSpan } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -191,9 +192,12 @@ async function makeInspectable(cfg: CliConfig): Promise<Inspectable> {
     return postgresSink({ url: cfg.db });
   }
   if (cfg.endpoint) {
-    throw new Error('remote-mode (SCRY_ENDPOINT) is not yet supported in this build — set SCRY_DB or --db');
+    if (!cfg.token) {
+      throw new Error('SCRY_ENDPOINT is set but SCRY_TOKEN is missing — both are required for remote mode');
+    }
+    return new RemoteInspectable({ endpoint: cfg.endpoint, token: cfg.token });
   }
-  throw new Error('no backend configured. Set SCRY_DB=<postgres-url> or pass --db=<url>.');
+  throw new Error('no backend configured. Set SCRY_DB=<postgres-url> for direct DB, or SCRY_ENDPOINT + SCRY_TOKEN for remote.');
 }
 
 // ---------------------------------------------------------------------------
