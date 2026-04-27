@@ -134,3 +134,49 @@ test('combinators handle missing keys gracefully', () => {
   expect(matches(base, regex('http.url', '.*'))).toBe(false);
   expect(matches(base, not({ 'absent.key': '*' }))).toBe(true);
 });
+
+// ---------------------------------------------------------------------------
+// durationMs top-level field filters
+// ---------------------------------------------------------------------------
+
+test('durationMs: numeric range comparisons', () => {
+  const slow = { ...base, durationMs: 1500 };
+  const fast = { ...base, durationMs: 50 };
+
+  expect(matches(slow, { durationMs: '>=1000' })).toBe(true);
+  expect(matches(fast, { durationMs: '>=1000' })).toBe(false);
+  expect(matches(slow, { durationMs: '<=2000' })).toBe(true);
+  expect(matches(slow, { durationMs: '>1000'  })).toBe(true);
+  expect(matches(slow, { durationMs: '<1000'  })).toBe(false);
+  expect(matches(fast, { durationMs: '<1000'  })).toBe(true);
+});
+
+test('durationMs: combined with attribute filter via and()', () => {
+  const span = { ...base, durationMs: 2000, attributes: { 'gen_ai.system': 'anthropic' } };
+  expect(matches(span, and({ 'gen_ai.system': 'anthropic' }, { durationMs: '>=1000' }))).toBe(true);
+  expect(matches(span, and({ 'gen_ai.system': 'anthropic' }, { durationMs: '>=3000' }))).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// Context attribute filters (session.id, user.id)
+// ---------------------------------------------------------------------------
+
+test('session.id attribute filter', () => {
+  const span = { ...base, attributes: { 'session.id': 'scn_abc' } };
+  expect(matches(span, { 'session.id': 'scn_abc' })).toBe(true);
+  expect(matches(span, { 'session.id': 'scn_xyz' })).toBe(false);
+  expect(matches(base, { 'session.id': '*' })).toBe(false);
+});
+
+test('user.id attribute filter', () => {
+  const span = { ...base, attributes: { 'user.id': 'usr_123' } };
+  expect(matches(span, { 'user.id': 'usr_123' })).toBe(true);
+  expect(matches(base, { 'user.id': '*' })).toBe(false);
+});
+
+test('llm.cost.total range filter', () => {
+  const span = { ...base, attributes: { 'llm.cost.total': 0.05 } };
+  expect(matches(span, { 'llm.cost.total': '>=0.01' })).toBe(true);
+  expect(matches(span, { 'llm.cost.total': '<=0.10' })).toBe(true);
+  expect(matches(span, { 'llm.cost.total': '>=0.10' })).toBe(false);
+});
