@@ -191,3 +191,65 @@ test('scry unknown cmd: exit 2', async () => {
   expect(r.code).toBe(2);
   expect(r.err).toContain('unknown command');
 });
+
+// ---------------------------------------------------------------------------
+// New filter flags: session-id, agent-id, user-id, cost, duration
+// ---------------------------------------------------------------------------
+
+test('buildFilter: --session-id maps to session.id attribute', () => {
+  const f = buildFilter({ 'session-id': 'scn_abc' });
+  expect(f).toEqual({ 'session.id': 'scn_abc' });
+});
+
+test('buildFilter: --user-id maps to user.id attribute', () => {
+  const f = buildFilter({ 'user-id': 'usr_123' });
+  expect(f).toEqual({ 'user.id': 'usr_123' });
+});
+
+test('buildFilter: --min-cost builds >= expression on llm.cost.total', () => {
+  const f = buildFilter({ 'min-cost': '0.01' }) as Record<string, string>;
+  expect(f['llm.cost.total']).toBe('>=0.01');
+});
+
+test('buildFilter: --max-cost builds <= expression on llm.cost.total', () => {
+  const f = buildFilter({ 'max-cost': '1.00' }) as Record<string, string>;
+  expect(f['llm.cost.total']).toBe('<=1.00');
+});
+
+test('buildFilter: --min-duration builds >= expression on durationMs', () => {
+  const f = buildFilter({ 'min-duration': '500' }) as Record<string, string>;
+  expect((f as any).durationMs).toBe('>=500');
+});
+
+test('buildFilter: --max-duration builds <= expression on durationMs', () => {
+  const f = buildFilter({ 'max-duration': '2000' }) as Record<string, string>;
+  expect((f as any).durationMs).toBe('<=2000');
+});
+
+test('buildFilter: multiple new flags compose via and()', () => {
+  const f = buildFilter({ 'session-id': 'scn_abc', 'min-cost': '0.01' });
+  expect(typeof f).toBe('object');
+  expect((f as { op: string }).op).toBe('and');
+});
+
+test('scry query: --session-id filters by session.id attribute', async () => {
+  const sink = memory();
+  sink.consume(span({ spanId: 'a', attributes: { 'session.id': 'scn_match' } }));
+  sink.consume(span({ spanId: 'b', attributes: { 'session.id': 'scn_other' } }));
+  const r = await captureRun(['query', '--session-id=scn_match'], sink);
+  expect(r.code).toBe(0);
+  const rows = JSON.parse(r.out);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].spanId).toBe('a');
+});
+
+test('scry query: --min-duration filters by durationMs', async () => {
+  const sink = memory();
+  sink.consume(span({ spanId: 'fast', durationMs: 10 }));
+  sink.consume(span({ spanId: 'slow', durationMs: 2000 }));
+  const r = await captureRun(['query', '--min-duration=1000'], sink);
+  expect(r.code).toBe(0);
+  const rows = JSON.parse(r.out);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].spanId).toBe('slow');
+});

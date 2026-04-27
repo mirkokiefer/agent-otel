@@ -10,7 +10,7 @@
 import type { MatchSpec, MatchOp, RoutedSpan, AttrValue } from './types.js';
 
 /** Fields on RoutedSpan that match-by-name keys can refer to directly. */
-const TOP_LEVEL_FIELDS = new Set(['kind', 'status_code', 'name', 'span_kind']);
+const TOP_LEVEL_FIELDS = new Set(['kind', 'status_code', 'name', 'span_kind', 'durationMs']);
 
 /** Walk a dotted attribute path: 'gen_ai.request.model' → attrs['gen_ai.request.model'] */
 function readAttribute(span: RoutedSpan, key: string): AttrValue | undefined {
@@ -27,6 +27,8 @@ function readField(span: RoutedSpan, key: string): string | undefined {
       return span.status.code;
     case 'name':
       return span.name;
+    case 'durationMs':
+      return String(span.durationMs);
     default:
       return undefined;
   }
