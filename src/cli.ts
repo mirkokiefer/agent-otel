@@ -96,7 +96,10 @@ export function parseSince(s: string): string {
 // Filter construction from CLI flags
 // ---------------------------------------------------------------------------
 
-const FILTER_FLAGS = new Set(['status', 'name', 'kind', 'trace', 'span', 'attr']);
+const FILTER_FLAGS = new Set([
+  'status', 'name', 'kind', 'trace', 'span', 'attr',
+  'session-id', 'user-id', 'min-cost', 'max-cost', 'min-duration', 'max-duration',
+]);
 
 export function buildFilter(flags: Record<string, string | true>): MatchSpec {
   const specs: MatchSpec[] = [];
@@ -104,6 +107,13 @@ export function buildFilter(flags: Record<string, string | true>): MatchSpec {
   if (typeof flags.status === 'string') specs.push({ status_code: flags.status });
   if (typeof flags.kind   === 'string') specs.push({ kind:        flags.kind   });
   if (typeof flags.name   === 'string') specs.push({ name:        flags.name   });
+
+  if (typeof flags['session-id']   === 'string') specs.push({ 'session.id':     flags['session-id'] });
+  if (typeof flags['user-id']      === 'string') specs.push({ 'user.id':         flags['user-id'] });
+  if (typeof flags['min-cost']     === 'string') specs.push({ 'llm.cost.total':   `>=${flags['min-cost']}` });
+  if (typeof flags['max-cost']     === 'string') specs.push({ 'llm.cost.total':   `<=${flags['max-cost']}` });
+  if (typeof flags['min-duration'] === 'string') specs.push({ durationMs:         `>=${flags['min-duration']}` });
+  if (typeof flags['max-duration'] === 'string') specs.push({ durationMs:         `<=${flags['max-duration']}` });
 
   // --attr=key=value (repeatable via comma-separation)
   if (typeof flags.attr === 'string') {
@@ -306,6 +316,8 @@ scry — peer into your agent's traces.
 
 USAGE:
   scry query       [--status=X] [--kind=X] [--name=X] [--attr=k=v] [--since=10m] [--limit=N] [--output=json|table]
+                   [--session-id=X] [--user-id=X]
+                   [--min-cost=N] [--max-cost=N] [--min-duration=N] [--max-duration=N]
   scry trace get   <trace_id>                       [--output=json|table]
   scry trace tree  <trace_id> [--attrs=k1,k2]       [--output=tree|json]
   scry chain       <trace_id> <span_id>             [--output=json|table]
