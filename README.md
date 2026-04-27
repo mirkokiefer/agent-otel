@@ -1,9 +1,31 @@
-# `agent-otel`
+# `agent-otel` + `scry`
 
-> **The OTel router for agent telemetry.**
-> Already paying for Phoenix *and* Braintrust *and* Datadog? Stop writing per-vendor integration code. **One OTel emit, declarative fanout, swap sinks via config.**
+> **Agent-native observability, in two layers.**
+> `agent-otel` — the OTel-native router + sinks + replay (the substrate).
+> `scry` — the SDK and CLI an agent uses to query its own traces.
 
-🚧 v0.0.5 — APIs may change. MIT.
+🚧 v0.0.7 — pre-alpha, APIs may change. MIT.
+
+---
+
+`agent-otel` is the substrate: declarative fanout to any number of backends, replay for retroactive rerouting, reversible PII masking. App engineers wire it up the same way whether the consumer is a human, an agent, or both. `scry` is where the agent-first thesis lives: an SDK and CLI for an agent to inspect its own traces in-process or from a shell. Think `kubernetes` + `kubectl` — library and CLI, dual-named on purpose. Phoenix/Braintrust/Langfuse render traces for humans; `scry` gives an agent a query surface over the same data. They compose.
+
+## Install
+
+```bash
+npm install agent-otel
+# or: bun add agent-otel
+```
+
+`scry` ships as a CLI in the same package:
+
+```bash
+npx scry --help
+# after bun add agent-otel:
+bunx scry --help
+```
+
+## Router — one OTel emit, declarative fanout
 
 ```ts
 import { NodeSDK } from '@opentelemetry/sdk-node';
@@ -20,11 +42,11 @@ const router = defineRouter({
   rules: [
     // Everything → archival
     { match: '*',                          to: ['archive']               },
-    // LLM calls → both eval platforms (A/B compare them, then drop one)
+    // LLM calls → both eval platforms
     { match: { 'gen_ai.system': '*' },     to: ['phoenix', 'braintrust'] },
     // Expensive LLM calls → ping #ai-cost-watch in Slack
     { match: { 'llm.cost.total': '>1.0' }, to: ['alerts']                },
-    // Errors → both Slack AND Braintrust (so eval picks them up)
+    // Errors → Slack AND Braintrust (so eval picks them up)
     { match: { 'status_code': 'ERROR' },   to: ['alerts', 'braintrust']  },
   ],
 });
@@ -33,7 +55,70 @@ const sdk = new NodeSDK({ spanProcessors: [router.asSpanProcessor()] });
 sdk.start();
 ```
 
-That's it. Your existing `tracer.startSpan(...)` calls now fan out per the rules. Add a sink, drop a sink, change a threshold — config-only, no app-code changes.
+Your existing `tracer.startSpan(...)` calls now fan out per the rules. Add a sink, drop a sink, change a threshold — config-only, no app-code changes.
+
+## `scry` — SDK and CLI for agents to query their own traces
+
+### Programmatic (SDK)
+
+The same primitives that power the CLI are exported as a TypeScript SDK. An agent running in-process imports them directly — no shell, no JSON round-trip. Sinks that implement `Inspectable` (`memory` and `postgres` today) are queryable; write-only sinks (Slack/Jsonl/Otlp) remain write-only.
+
+```ts
+import { memory } from 'agent-otel/sinks/memory';
+import { and, substring } from 'agent-otel/filters';
+import { buildTree, causalChain, renderTree } from 'agent-otel/trace-tree';
+
+const sink = memory();
+// ... router emits into sink ...
+
+const errors = sink.findSpans(
+  and({ status_code: 'ERROR' }, substring('name', 'tool.')),
+  { limit: 20 },
+);
+
+const tree = buildTree(sink.getTrace(traceId));
+console.log(renderTree(tree, { attrs: ['llm.cost.total'] }));
+```
+
+### CLI
+
+An agent in a sandbox reaches for `scry` to inspect its own traces without leaving the shell.
+
+**Connect via direct DB or remote endpoint:**
+
+```bash
+export SCRY_DB=postgres://localhost/mydb         # direct Postgres (local / dev)
+# or for remote:
+export SCRY_ENDPOINT=https://scry.example.com
+export SCRY_TOKEN=<jwt>
+```
+
+Flags `--db`, `--endpoint`, `--token` work per-call too.
+
+**Three one-liners:**
+
+```bash
+# Find all ERROR spans in the last 10 minutes, extract span IDs
+scry query --status=ERROR --since=10m --output=json | jq '.[] | .spanId'
+
+# Render the full call tree of a job (LLM ↔ tool ↔ DB) as ASCII
+scry trace tree 0123abcd...
+
+# Aggregate cost, latency, error rate across a filter
+scry stats --attr=gen_ai.system=anthropic
+```
+
+Full subcommand reference:
+
+```
+scry query       [--status=X] [--kind=X] [--name=X] [--attr=k=v] [--since=10m] [--limit=N]
+scry trace get   <trace_id>
+scry trace tree  <trace_id> [--attrs=k1,k2]
+scry chain       <trace_id> <span_id>      # walk a span back to root: what led to this error?
+scry stats       [--status=X] [--attr=k=v]
+```
+
+Composes naturally with shell tooling: `scry query --output=json | jq`, `scry stats | awk '$1 > 0.1 {exit 1}'`. No MCP boot, no ceremony.
 
 ---
 
@@ -90,7 +175,7 @@ await replay({
 });
 ```
 
-That's it. Take spans you already captured, re-route them through any router config. Concrete workflows this enables — none of which are easy with Phoenix/Braintrust/Datadog/Collector alone:
+Take spans you already captured, re-route them through any router config. Concrete workflows this enables:
 
 ### Vendor evaluation without a parallel-instrumentation week
 
@@ -129,11 +214,6 @@ About to add `{ match: { 'llm.cost.total': '>0.5' }, to: ['cost-alerts'] }`. Wil
 
 `agent-otel` separates the transport format (OTel) from the routing decisions (rules). You can re-decide destinations indefinitely.
 
-### Future replay flavors
-
-- **Re-execute** — actually re-run the agent with the same inputs, get a fresh trace. Requires a runtime kernel, not just a router. Planned.
-- **Counterfactual** — re-execute with one thing swapped (different model, different system prompt). Planned.
-
 ## Sinks shipped today
 
 | Sink | Module | What it does |
@@ -141,9 +221,9 @@ About to add `{ match: { 'llm.cost.total': '>0.5' }, to: ['cost-alerts'] }`. Wil
 | Phoenix | `agent-otel/sinks/phoenix` | OTLP/HTTP to Phoenix. Self-hosted or cloud. Optional API key. |
 | Braintrust | `agent-otel/sinks/braintrust` | OTLP/HTTP to Braintrust. Routes to a project's logs or an experiment. |
 | Slack | `agent-otel/sinks/slack` | Posts spans as messages to a Slack incoming webhook. Built-in rate limiting. Pretty default formatter; bring your own. |
-| Generic OTLP | `agent-otel/sinks/otlp` | Any OTLP/HTTP endpoint. Works with Honeycomb, Datadog, Tempo, Jaeger v2, LangSmith, Langfuse, anything that speaks OTLP. Defaults to protobuf via the official OTel exporter (the format virtually all OTLP receivers require); JSON available as fallback. |
+| Generic OTLP | `agent-otel/sinks/otlp` | Any OTLP/HTTP endpoint. Works with Honeycomb, Datadog, Tempo, Jaeger v2, LangSmith, Langfuse, anything that speaks OTLP. Defaults to protobuf via the official OTel exporter; JSON available as fallback. |
 | S3 (and S3-compatible) | `agent-otel/sinks/s3` | Gzipped JSONL upload to S3 / R2 / MinIO / Backblaze. The cheap canonical archive sink. `@aws-sdk/client-s3` is an optional peer dep — install only if you use this sink. |
-| Postgres | `agent-otel/sinks/postgres` | Insert spans into a Postgres table. Default OTel-canonical schema (or BYO via `columnMapper`). `ON CONFLICT (span_id) DO UPDATE` with JSONB attribute merge — composes safely with engine-side triggers that may bootstrap rows with a partial column set. BYO query function or `url`. `postgres` is an optional peer dep — only required when using `url`. |
+| Postgres | `agent-otel/sinks/postgres` | Insert spans into a Postgres table. Default OTel-canonical schema (or BYO via `columnMapper`). `ON CONFLICT (span_id) DO UPDATE` with JSONB attribute merge. Also the backing store `scry` queries. `postgres` is an optional peer dep — only required when using `url`. |
 | In-memory | `agent-otel/sinks/memory` | JS array. Tests and replay. |
 | JSONL file | `agent-otel/sinks/jsonl` | Append per span to a local file. Single-process. |
 
@@ -213,7 +293,7 @@ Multiple **rules** matching the same span union their target sinks.
 
 ## Status
 
-**v0.0.5 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay primitive (re-route flavor), reversible PII masking via `agent-otel/privacy` (composes with pii-proxy). 21 unit tests + 6 end-to-end tests against real backends (Phoenix, OTLP, S3 via R2, Braintrust, Slack, Postgres). API will change. Open issues, send PRs.
+**v0.0.7 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay primitive (re-route flavor), reversible PII masking via `agent-otel/privacy`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 86 unit tests + e2e tests against real backends (Phoenix, OTLP, S3 via R2, Braintrust, Slack, Postgres). API will change. Open issues, send PRs.
 
 ## Tests
 
@@ -226,6 +306,12 @@ bun run test:e2e          # end-to-end tests against real backends
 E2E tests verify each sink against a real backend. Required env vars and what's tested are documented in `tests/e2e/README.md`. CI without secrets passes (skip-if-missing pattern); local runs verify whatever you have keys for.
 
 The package is independent — no required hosted account, no preferred backend. Use it with whatever stack.
+
+## What's next
+
+- **`scry mcp`** — same query primitives behind an MCP tool surface, so external agents (Claude Code, etc.) can call `scry` without a shell
+- **Replay-with-mutation** — `swapLLMResponse`, `swapToolOutput` — the seed of self-eval and RL rollouts
+- **Annotation write-back** — agents record observations on past spans
 
 ## License
 
