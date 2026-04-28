@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
@@ -19,6 +19,7 @@
     "./sinks/postgres": "./src/sinks/postgres.ts",
     "./replay": "./src/replay.ts",
     "./replay-execute": "./src/replay-execute.ts",
+    "./anthropic": "./src/instrument/anthropic.ts",
     "./privacy": "./src/privacy.ts",
     "./tree": "./src/trace-tree.ts",
     "./cli":  "./src/cli.ts"
