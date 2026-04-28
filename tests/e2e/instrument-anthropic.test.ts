@@ -14,79 +14,15 @@
  * Required env: ANTHROPIC_API_KEY. Costs ~$0.0001 per run on Haiku.
  */
 
-import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { NodeSDK } from '@opentelemetry/sdk-node';
-import { resourceFromAttributes } from '@opentelemetry/resources';
-import { SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-
+import { test, expect, beforeAll } from 'bun:test';
 import Anthropic from '@anthropic-ai/sdk';
 import { instrument } from '../../src/instrument/anthropic.js';
-import { defineRouter } from '../../src/router.js';
-import { memory } from '../../src/sinks/memory.js';
 import { skipIfMissing } from './_helpers.js';
+import { ensureOtel, sharedMemSink as memSink } from './_otel-setup.js';
 
 const apiKey = skipIfMissing('ANTHROPIC_API_KEY');
 
-const memSink = memory();
-let sdk: NodeSDK | null = null;
-
-beforeAll(async () => {
-  if (!apiKey) return;
-
-  // Wire a real OTel SDK with our router as a SimpleSpanProcessor (synchronous
-  // export — easier than waiting for BSP flushes in a test).
-  const router = defineRouter({
-    sinks: { mem: memSink },
-    rules: [{ match: '*', to: ['mem'] }],
-  });
-
-  sdk = new NodeSDK({
-    resource: resourceFromAttributes({
-      'service.name': 'agent-otel-instrument-anthropic-e2e',
-    }),
-    spanProcessors: [
-      // The router exposes itself as a SpanProcessor too, but using a Simple
-      // wrapper with our router avoids any async drain at test end.
-      {
-        onStart() {},
-        onEnd(span) { void router.route(toRouted(span)); },
-        async forceFlush() { await router.flush(); },
-        async shutdown()   { await router.shutdown(); },
-      } as any,
-    ],
-  });
-  sdk.start();
-});
-
-afterAll(async () => {
-  await sdk?.shutdown();
-});
-
-// Minimal ReadableSpan→RoutedSpan converter copied from router.toRouted to
-// keep the test focused. The router has its own asSpanProcessor() but we
-// drop down a level here to avoid mixing concerns.
-function toRouted(span: any): any {
-  const startNs = span.startTime[0] * 1e9 + span.startTime[1];
-  const endNs   = span.endTime[0]   * 1e9 + span.endTime[1];
-  const KIND_NAMES = ['INTERNAL','SERVER','CLIENT','PRODUCER','CONSUMER'];
-  const STATUS_NAMES = ['UNSET','OK','ERROR'];
-  return {
-    traceId: span.spanContext().traceId,
-    spanId:  span.spanContext().spanId,
-    parentSpanId: span.parentSpanContext?.spanId,
-    name: span.name,
-    kind: KIND_NAMES[span.kind] ?? 'INTERNAL',
-    status: { code: STATUS_NAMES[span.status.code] ?? 'UNSET', message: span.status.message },
-    startTimeUnixNano: startNs,
-    endTimeUnixNano: endNs,
-    durationMs: (endNs - startNs) / 1e6,
-    attributes: { ...(span.attributes ?? {}) },
-    events: [],
-    links:  [],
-    resource: { ...(span.resource?.attributes ?? {}) },
-    scope: { name: span.instrumentationScope.name, version: span.instrumentationScope.version },
-  };
-}
+beforeAll(() => { if (apiKey) ensureOtel(); });
 
 test('instrument(anthropic): real call emits OpenInference-shaped span', async () => {
   if (!apiKey) return;

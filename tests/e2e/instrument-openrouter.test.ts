@@ -9,64 +9,14 @@
  * Required env: OPENROUTER_API_KEY. Costs ~$0.0001 on the free or cheap models.
  */
 
-import { test, expect, beforeAll, afterAll } from 'bun:test';
-import { NodeSDK } from '@opentelemetry/sdk-node';
-import { resourceFromAttributes } from '@opentelemetry/resources';
-
+import { test, expect, beforeAll } from 'bun:test';
 import { client as openrouterClient, instrument as instrumentOR } from '../../src/instrument/openrouter.js';
-import { defineRouter } from '../../src/router.js';
-import { memory } from '../../src/sinks/memory.js';
 import { skipIfMissing } from './_helpers.js';
+import { ensureOtel, sharedMemSink as memSink } from './_otel-setup.js';
 
 const apiKey = skipIfMissing('OPENROUTER_API_KEY');
 
-const memSink = memory();
-let sdk: NodeSDK | null = null;
-
-beforeAll(async () => {
-  if (!apiKey) return;
-  const router = defineRouter({
-    sinks: { mem: memSink },
-    rules: [{ match: '*', to: ['mem'] }],
-  });
-  sdk = new NodeSDK({
-    resource: resourceFromAttributes({ 'service.name': 'agent-otel-instrument-openrouter-e2e' }),
-    spanProcessors: [
-      {
-        onStart() {},
-        onEnd(span) { void router.route(toRouted(span)); },
-        async forceFlush() { await router.flush(); },
-        async shutdown()   { await router.shutdown(); },
-      } as any,
-    ],
-  });
-  sdk.start();
-});
-
-afterAll(async () => { await sdk?.shutdown(); });
-
-function toRouted(span: any): any {
-  const startNs = span.startTime[0] * 1e9 + span.startTime[1];
-  const endNs   = span.endTime[0]   * 1e9 + span.endTime[1];
-  const KIND_NAMES = ['INTERNAL','SERVER','CLIENT','PRODUCER','CONSUMER'];
-  const STATUS_NAMES = ['UNSET','OK','ERROR'];
-  return {
-    traceId: span.spanContext().traceId,
-    spanId:  span.spanContext().spanId,
-    parentSpanId: span.parentSpanContext?.spanId,
-    name: span.name,
-    kind: KIND_NAMES[span.kind] ?? 'INTERNAL',
-    status: { code: STATUS_NAMES[span.status.code] ?? 'UNSET', message: span.status.message },
-    startTimeUnixNano: startNs,
-    endTimeUnixNano: endNs,
-    durationMs: (endNs - startNs) / 1e6,
-    attributes: { ...(span.attributes ?? {}) },
-    events: [],
-    links:  [],
-    resource: { ...(span.resource?.attributes ?? {}) },
-    scope: { name: span.instrumentationScope.name, version: span.instrumentationScope.version },
-  };
-}
+beforeAll(() => { if (apiKey) ensureOtel(); });
 
 // OpenRouter has many cheap/free models. Use a known-good cheap one.
 const TEST_MODEL = 'anthropic/claude-haiku-4-5';
