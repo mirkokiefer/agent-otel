@@ -205,8 +205,8 @@ export interface TraceStats {
  * named sink and delegates.
  *
  * The `where` option in QueryOptions is the auth-scope mechanism — embedders
- * supply a scope MatchSpec and the implementation AND-composes
- * it with every query so callers cannot bypass it.
+ * supply a scope MatchSpec and the implementation AND-composes it with every
+ * query so callers cannot bypass it.
  */
 export interface Inspectable {
   /** Find spans matching `filter`. */

@@ -2,9 +2,9 @@
  * Remote-mode Inspectable.
  *
  * Used by `scry` CLI when run outside the server process — most importantly
- * inside sandbox environments. The CLI connects to a hosted scry endpoint with
- * a signed scoped token in its env. The server validates the token, applies
- * scope as a non-bypassable `where` filter, and answers queries.
+ * inside sandbox environments. The CLI connects to a hosted scry endpoint
+ * with a signed scoped token in its env. The server validates the token,
+ * applies scope as a non-bypassable `where` filter, and answers queries.
  *
  * Auth is handled entirely server-side via the bearer token. The CLI never
  * sees scope claims; it just makes HTTP calls.

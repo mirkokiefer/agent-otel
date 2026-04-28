@@ -10,8 +10,8 @@
  *
  *   2. **Replaces vendor-specific span tables.** If you previously
  *      bootstrapped a `spans`-like table from your engine state via
- *      triggers, this sink writes directly so you can
- *      retire the trigger when ready.
+ *      triggers, this sink writes directly so you can retire the trigger
+ *      when ready.
  *
  * Default schema is OTel-canonical:
  *
@@ -21,8 +21,8 @@
  *   attributes JSONB, events JSONB, links JSONB,
  *   resource JSONB, scope JSONB
  *
- * For non-default schemas (some engines add state columns
- * like exec_status, executor, waits_for) pass a custom `columnMapper`.
+ * For non-default schemas (e.g. an engine that adds columns like
+ * exec_status, executor, waits_for) pass a custom `columnMapper`.
  *
  * Connection options:
  *   - `query`: bring your own query function (any pg client works)
@@ -59,7 +59,7 @@
  *       start_time: new Date(s.startTimeUnixNano / 1e6),
  *       end_time:   new Date(s.endTimeUnixNano   / 1e6),
  *       attributes: s.attributes,
- *       // extra engine-state columns:
+ *       // additional engine-state columns:
  *       exec_status: s.attributes.exec_status ?? 'completed',
  *       executor:    s.attributes.executor    ?? 'tool',
  *       cost:        s.attributes['llm.cost.total'],
@@ -477,7 +477,7 @@ export function postgres(opts: PostgresSinkOptions): Sink & Inspectable {
         .filter(c => c !== conflictKey)
         .map(c => {
           // Heuristic: jsonb columns are merged via `||`; everything else
-          // is overwritten. This matches the typical engine-trigger pattern.
+          // is overwritten. Matches the typical engine-trigger pattern.
           if (c === 'attributes' || c === 'events' || c === 'links' || c === 'resource' || c === 'scope') {
             return `"${c}" = COALESCE(${table}."${c}", '{}'::jsonb) || EXCLUDED."${c}"`;
           }

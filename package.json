@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
@@ -20,6 +20,7 @@
     "./replay": "./src/replay.ts",
     "./replay-execute": "./src/replay-execute.ts",
     "./anthropic": "./src/instrument/anthropic.ts",
+    "./openai":    "./src/instrument/openai.ts",
     "./privacy": "./src/privacy.ts",
     "./tree": "./src/trace-tree.ts",
     "./cli":  "./src/cli.ts"
@@ -65,13 +66,15 @@
     "@opentelemetry/exporter-trace-otlp-proto": "^0.200.0",
     "@aws-sdk/client-s3": "^3.0.0",
     "postgres": "^3.0.0",
-    "@anthropic-ai/sdk": "^0.30.0"
+    "@anthropic-ai/sdk": "^0.30.0",
+    "openai": "^6.0.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/exporter-trace-otlp-proto": { "optional": true },
     "@aws-sdk/client-s3":                       { "optional": true },
     "postgres":                                  { "optional": true },
-    "@anthropic-ai/sdk":                         { "optional": true }
+    "@anthropic-ai/sdk":                         { "optional": true },
+    "openai":                                    { "optional": true }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.81.0",
@@ -82,6 +85,7 @@
     "@opentelemetry/sdk-node": "^0.212.0",
     "@opentelemetry/sdk-trace-base": "^2.0.0",
     "@types/bun": "latest",
+    "openai": "^6.22.0",
     "postgres": "^3.4.9",
     "typescript": "^5.6.0"
   },

@@ -28,8 +28,7 @@ import type { RoutedSpan } from '../../src/types.js';
 const apiKey = skipIfMissing('ANTHROPIC_API_KEY');
 
 /**
- * Synthesize a stored LLM span as if it came out of the production
- * tracer. OpenInference-shaped attributes:
+ * Synthesize a stored LLM span. OpenInference-shaped attributes:
  *   - llm.request.body: full JSON request (model, messages, system, …)
  *   - llm.model_name:   convenience top-level
  *   - flattened input messages for human-readable views

@@ -4,7 +4,7 @@
 > `agent-otel` — the OTel-native router + sinks + replay (the substrate).
 > `scry` — the SDK and CLI an agent uses to query its own traces.
 
-🚧 v0.0.11 — pre-alpha, APIs may change. MIT.
+🚧 v0.0.13 — pre-alpha, APIs may change. MIT.
 
 ---
 
@@ -25,9 +25,9 @@ npx scry --help
 bunx scry --help
 ```
 
-## 60-second install — Anthropic + Braintrust
+## 60-second install — Anthropic / OpenAI + Braintrust
 
-If you're on `@anthropic-ai/sdk` and Braintrust today, this is the whole setup:
+If you're on `@anthropic-ai/sdk` or `openai` and Braintrust today, this is the whole setup:
 
 ```ts
 import Anthropic from '@anthropic-ai/sdk';
@@ -52,8 +52,8 @@ const router = defineRouter({
 
 new NodeSDK({ spanProcessors: [router.asSpanProcessor()] }).start();
 
-// 2. Wrap your Anthropic client. That's it. Every messages.create() now emits
-//    a perfect OpenInference span — to Braintrust (masked) AND your archive (raw).
+// 2. Wrap your client. That's it. Every call now emits a perfect
+//    OpenInference span — to Braintrust (masked) AND your archive (raw).
 const anthropic = instrument(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! }));
 
 const resp = await anthropic.messages.create({
@@ -63,8 +63,24 @@ const resp = await anthropic.messages.create({
 });
 ```
 
+**For OpenAI, swap two lines:**
+
+```ts
+import OpenAI from 'openai';
+import { instrument as instrumentOpenAI } from 'agent-otel/openai';
+
+const openai = instrumentOpenAI(new OpenAI({ apiKey: process.env.OPENAI_API_KEY! }));
+
+const resp = await openai.chat.completions.create({
+  model: 'gpt-5.5',
+  messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+Same auto-instrumentation. Built-in cost tables for GPT-5.5 / GPT-5 / GPT-4.1 / GPT-4o families; date-pinned model IDs (`gpt-5.5-2026-04-23`) match by prefix.
+
 What you get for those ~10 lines:
-- ✅ Every Anthropic call traced with OpenInference attributes (gen_ai.\*, llm.\*, tool calls flattened)
+- ✅ Every Anthropic / OpenAI call traced with OpenInference attributes (gen_ai.\*, llm.\*, tool calls flattened)
 - ✅ Braintrust dashboards work as before (real evals, real playground), **but with PII masked**
 - ✅ Your own Postgres archive — query with `scry trace tree <id>` from the CLI
 - ✅ Real production cost and token counts on every span (Sonnet/Opus/Haiku tables built in)
@@ -456,7 +472,7 @@ Multiple **rules** matching the same span union their target sinks.
 
 ## Status
 
-**v0.0.11 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay (re-route flavor) + replay-execute (counterfactual single-LLM-call flavor), reversible PII masking via `agent-otel/privacy`, **auto-instrument for `@anthropic-ai/sdk`** via `agent-otel/anthropic`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 102 unit tests + e2e tests against real backends — including end-to-end verified `withPrivacy(braintrust())` (POST → fetch back, real values masked, fakes present), `replayLLMCall` against the real Anthropic API, and `instrument(Anthropic)` emitting OpenInference spans on real calls. API will change. Open issues, send PRs.
+**v0.0.13 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay (re-route flavor) + replay-execute (counterfactual single-LLM-call flavor), reversible PII masking via `agent-otel/privacy`, **auto-instrument for `@anthropic-ai/sdk` and `openai`** via `agent-otel/anthropic` + `agent-otel/openai`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 102 unit tests + 8 e2e tests against real backends — including end-to-end verified `withPrivacy(braintrust())` (POST → fetch back, real values masked, fakes present), `replayLLMCall` against real Anthropic, and `instrument(...)` emitting OpenInference spans against both Anthropic and OpenAI APIs. API will change. Open issues, send PRs.
 
 ## Tests
 
@@ -473,7 +489,7 @@ The package is independent — no required hosted account, no preferred backend.
 ## What's next
 
 - **`scry mcp`** — same query primitives behind an MCP tool surface, so external agents (Claude Code, Cursor, etc.) can call `scry` without a shell. First MCP server in LLM-trace-land.
-- **More auto-instrument adapters** — `agent-otel/openai`, `agent-otel/vercel-ai`, `agent-otel/mastra`. Anthropic shipped in v0.0.11. Streaming wrap for Anthropic in the same module.
+- **More auto-instrument adapters** — `agent-otel/vercel-ai`, `agent-otel/mastra`, `agent-otel/openai-responses` (the new Responses API). Anthropic + OpenAI Chat Completions shipped. Streaming wrap for both lands next.
 - **Subtree re-execution** — extend `replayLLMCall` to re-run downstream tools/LLMs from the swap point, not just one node. Bridges to RL rollouts.
 - **Healthcare/PHI detector preset** — `withPrivacy(sink, { preset: 'hipaa' })` bundling ICD-10 / NPI / MRN detectors on top of pii-proxy.
 - **Annotation write-back** — agents record observations on past spans (their own labels for self-supervised eval data).

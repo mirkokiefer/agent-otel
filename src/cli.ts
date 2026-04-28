@@ -12,7 +12,7 @@
  *   - Local DB: SCRY_DB or --db=<postgres-url> connects directly to Postgres
  *     via the postgres sink's Inspectable surface. For super-admins / dev.
  *   - Remote: SCRY_ENDPOINT + SCRY_TOKEN talks to a hosted scry HTTP
- *     endpoint that applies auth-scoping. (Slice 2 — not implemented yet.)
+ *     endpoint that applies auth-scoping.
  *
  * Output:
  *   --output=json     pipe-friendly (default for non-tty stdout)
