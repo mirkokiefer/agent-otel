@@ -179,14 +179,21 @@ export function defaultSchemaSql(table = 'spans'): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Top-level columns we treat specially. Anything else is interpreted as
- * an attribute key and compared against the JSONB `attributes` column.
+ * Top-level columns/expressions we treat specially. Anything else is
+ * interpreted as an attribute key and compared against the JSONB
+ * `attributes` column.
+ *
+ * `duration_ms` / `durationMs` map to a computed expression (end_time -
+ * start_time) so callers can filter by computed duration without storing
+ * a redundant column. EXTRACT(EPOCH FROM …) yields seconds; multiply for ms.
  */
 const SQL_TOP_LEVEL: Record<string, string> = {
   kind:        'kind',
   span_kind:   'kind',
   status_code: 'status_code',
   name:        'name',
+  duration_ms: '(EXTRACT(EPOCH FROM (end_time - start_time)) * 1000)',
+  durationMs:  '(EXTRACT(EPOCH FROM (end_time - start_time)) * 1000)',
 };
 
 interface SqlFrag {
