@@ -128,6 +128,21 @@ test('array form supports MatchOp entries', () => {
   expect(matches(span, [{ 'gen_ai.system': 'anthropic' }, substring('name', 'openai')])).toBe(true);
 });
 
+test('duration_ms / durationMs (top-level field): numeric comparison works', () => {
+  const fast = { ...base, durationMs: 50 };
+  const slow = { ...base, durationMs: 5000 };
+
+  // snake_case
+  expect(matches(slow, { duration_ms: '>=1000' })).toBe(true);
+  expect(matches(fast, { duration_ms: '>=1000' })).toBe(false);
+  expect(matches(fast, { duration_ms: '<=500' })).toBe(true);
+  expect(matches(slow, { duration_ms: '<=500' })).toBe(false);
+
+  // camelCase alias
+  expect(matches(slow, { durationMs:  '>=1000' })).toBe(true);
+  expect(matches(fast, { durationMs:  '>=1000' })).toBe(false);
+});
+
 test('combinators handle missing keys gracefully', () => {
   // substring/regex on absent attribute → no match (not crash)
   expect(matches(base, substring('http.url', 'anything'))).toBe(false);

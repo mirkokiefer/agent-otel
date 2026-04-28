@@ -9,8 +9,19 @@
 
 import type { MatchSpec, MatchOp, RoutedSpan, AttrValue } from './types.js';
 
-/** Fields on RoutedSpan that match-by-name keys can refer to directly. */
-const TOP_LEVEL_FIELDS = new Set(['kind', 'status_code', 'name', 'span_kind', 'durationMs']);
+/**
+ * Fields on RoutedSpan that match-by-name keys can refer to directly.
+ *
+ * `duration_ms` / `durationMs` map to RoutedSpan.durationMs (computed from
+ * start/end times). Both spellings are accepted because callers tend to
+ * write `duration_ms` from JSON contexts (snake_case) and `durationMs` from
+ * TS contexts (camelCase). The postgres sink compiler honors both via the
+ * same lookup table.
+ */
+const TOP_LEVEL_FIELDS = new Set([
+  'kind', 'status_code', 'name', 'span_kind',
+  'duration_ms', 'durationMs',
+]);
 
 /** Walk a dotted attribute path: 'gen_ai.request.model' → attrs['gen_ai.request.model'] */
 function readAttribute(span: RoutedSpan, key: string): AttrValue | undefined {
@@ -18,7 +29,7 @@ function readAttribute(span: RoutedSpan, key: string): AttrValue | undefined {
   return span.attributes[key];
 }
 
-function readField(span: RoutedSpan, key: string): string | undefined {
+function readField(span: RoutedSpan, key: string): string | number | undefined {
   switch (key) {
     case 'kind':
     case 'span_kind':
@@ -27,8 +38,9 @@ function readField(span: RoutedSpan, key: string): string | undefined {
       return span.status.code;
     case 'name':
       return span.name;
+    case 'duration_ms':
     case 'durationMs':
-      return String(span.durationMs);
+      return span.durationMs;
     default:
       return undefined;
   }
@@ -79,11 +91,7 @@ function matchObject(
         if (actual === undefined) return false;
         continue;
       }
-      if (typeof expected === 'string') {
-        if (!compare(actual, expected)) return false;
-      } else if (actual !== String(expected)) {
-        return false;
-      }
+      if (!compare(actual, expected)) return false;
     } else {
       const actual = readAttribute(span, key);
       if (!compare(actual, expected)) return false;

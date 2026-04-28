@@ -192,6 +192,20 @@ test('rowToRoutedSpan round-trips a queried row', async () => {
   expect(r.durationMs).toBe(1000);
 });
 
+test("duration_ms / durationMs filter: compiles to EXTRACT(EPOCH ...) on time columns", async () => {
+  const cs = makeSink();
+  await cs.sink.findSpans({ duration_ms: '>=1000' });
+  const select = cs.calls.find(c => c.sql.includes('SELECT'))!;
+  expect(select.sql).toContain('EXTRACT(EPOCH FROM (end_time - start_time))');
+  // Numeric comparison
+  expect(select.params).toContain(1000);
+
+  const cc = makeSink();
+  await cc.sink.findSpans({ durationMs: '<=500' });
+  expect(cc.calls.find(c => c.sql.includes('SELECT'))!.sql)
+    .toContain('EXTRACT(EPOCH FROM (end_time - start_time))');
+});
+
 test('attribute key with single quote is escaped', async () => {
   const { sink, calls } = makeSink();
   await sink.findSpans({ "weird'key": 'x' });
