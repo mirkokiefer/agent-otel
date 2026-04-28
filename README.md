@@ -159,6 +159,51 @@ The OTel Collector is the canonical OTLP pipeline for traditional APM. It's a Go
 
 If you already run the Collector for traditional APM, run `agent-otel` alongside it — they don't compete. Many teams will end up doing both.
 
+## Already on Braintrust / Phoenix / Langfuse / LangSmith?
+
+Don't switch — **compose**. Each of these is your eval/observability backend; we make them stronger without you re-instrumenting anything.
+
+For an existing Braintrust user (the same pattern works for Phoenix / Langfuse / LangSmith):
+
+```ts
+import { defineRouter } from 'agent-otel';
+import { jsonl, postgres, braintrust } from 'agent-otel/sinks';
+import { withPrivacy, PrivacyProxy } from 'agent-otel/privacy';
+
+const proxy = new PrivacyProxy();
+
+const router = defineRouter({
+  sinks: {
+    // KEEP: Braintrust as your eval/playground/experiments backend.
+    // ADD: PII masking so customer emails / tokens never reach Braintrust.
+    braintrust: withPrivacy(
+      braintrust({ apiKey: process.env.BRAINTRUST_API_KEY!, project: 'support-agent' }),
+      { proxy, redactKeys: ['auth.token'] },
+    ),
+    // ADD: vendor-neutral local archive — escape hatch + audit trail
+    archive: postgres({ url: process.env.DATABASE_URL!, table: 'spans' }),
+    // ADD: cheap on-disk dump for backfill / replay later
+    jsonl:   jsonl({ path: './prod-traces.jsonl' }),
+  },
+  rules: [{ match: '*', to: ['braintrust', 'archive', 'jsonl'] }],
+});
+```
+
+What this gets you that Braintrust alone doesn't:
+
+| Need | Braintrust alone | + agent-otel |
+|---|---|---|
+| Eval / playground / experiments | ✓ | ✓ (unchanged) |
+| Trace ingest + dashboards | ✓ | ✓ (unchanged) |
+| **PII masking before vendor sees it** | ✗ | ✓ via `withPrivacy()` (e2e tested against live Braintrust API) |
+| **Vendor-neutral archive** (Postgres / S3 / JSONL) | ✗ | ✓ |
+| **Programmatic agent self-debug** (`scry` SDK + CLI) | ✗ | ✓ |
+| **Counterfactual replay** ("what if Sonnet 4.7?") | manual playground only | `replayLLMCall()` — see below |
+| **MCP server** for Claude Code / Cursor to query traces | ✗ | planned |
+| **Lock-in escape** — leave whenever | hard | trivial; spans archived in your own store |
+
+The pitch isn't *replace your vendor*. It's *keep what works, add what's missing*.
+
 ## Replay — retroactive routing
 
 The unique capability `agent-otel` unlocks: **change your mind about where spans go AFTER you've collected them.** Routing is configuration, not code, so the destinations aren't baked in at emit time.
@@ -214,6 +259,64 @@ About to add `{ match: { 'llm.cost.total': '>0.5' }, to: ['cost-alerts'] }`. Wil
 
 `agent-otel` separates the transport format (OTel) from the routing decisions (rules). You can re-decide destinations indefinitely.
 
+## Counterfactual replay — re-run a stored LLM call with one thing swapped
+
+`agent-otel/replay-execute` does what eval-platform playgrounds do, but **programmatically across many traces**. Take a stored LLM span, swap one thing (model, system prompt, temperature), call the real provider, get a real response. Not data-mutation — actual re-execution.
+
+```ts
+import { replayLLMCall, swapModel, swapSystem, pipe } from 'agent-otel/replay-execute';
+import { postgres } from 'agent-otel/sinks';
+
+const archive = postgres({ url: process.env.DATABASE_URL! });
+
+// "Would my agent have made a different decision with Sonnet 4.7?"
+const result = await replayLLMCall({
+  source:   archive,
+  spanId:   '0123abcd...',                       // a stored LLM span
+  mutate:   swapModel('claude-sonnet-4-7'),
+  provider: 'anthropic',
+  apiKey:   process.env.ANTHROPIC_API_KEY!,
+});
+
+console.log('Original output:', result.originalSpan.attributes['llm.output_messages.0.message.content']);
+console.log('New output:     ', result.newResponse.content);
+console.log('Cost:           ', result.newResponse.tokens);
+```
+
+Composable mutators: `swapModel`, `swapSystem`, `setTemperature`, `appendMessage`, plus `pipe(...)` to chain them. Bring your own with `(req) => mutated`.
+
+Works with any provider via the `execute` callback:
+
+```ts
+import OpenAI from 'openai';
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+
+await replayLLMCall({
+  source: archive,
+  spanId,
+  mutate: swapModel('gpt-5'),
+  execute: async (req) => {
+    const resp = await openai.chat.completions.create(req as any);
+    return { content: resp.choices[0].message.content ?? undefined, raw: resp };
+  },
+});
+```
+
+Built-in `provider: 'anthropic'` lazy-loads `@anthropic-ai/sdk` (optional peer dep). For OpenAI/Gemini/etc. supply your own `execute` until first-class adapters ship.
+
+`dryRun: true` returns the mutated request without calling the provider — useful for "what does the request look like with my mutator applied" before paying for tokens.
+
+**Concrete workflow this enables — replay → eval pipeline:**
+
+1. Pull yesterday's failed traces from postgres (`scry query --status=ERROR --since=24h`)
+2. For each, `replayLLMCall` with `swapModel('claude-sonnet-4-7')`
+3. Pipe new responses into a Braintrust experiment for scoring
+4. Decision: did upgrading the model fix more than it broke?
+
+Their playground × N, scripted, repeatable. E2E tested against the real Anthropic API in `tests/e2e/replay-execute.test.ts`.
+
+> **Note.** This is the **counterfactual single-LLM-call** flavor — re-runs ONE node of the trace. Re-executing the entire downstream subtree (so a tool's new response cascades) is a bigger feature on the roadmap; the single-call version covers the most common "what if I'd used the new model" workflow today.
+
 ## Sinks shipped today
 
 | Sink | Module | What it does |
@@ -248,19 +351,21 @@ const router = defineRouter({
 });
 ```
 
-Output (real run):
+Output (real run, verified by e2e against the live Braintrust API in `tests/e2e/privacy-braintrust.test.ts`):
 
 ```
-ARCHIVE     → "to": "mirko@kiefer.com", "tracking": "AETH0000345323DY"
-PHOENIX     → "to": "laney_oconner@yahoo.com", "tracking": "IAUT1212493063GN"
-BRAINTRUST  → "to": "laney_oconner@yahoo.com", "tracking": "IAUT1212493063GN"  ← same fakes!
+ARCHIVE     → "user.email": "mirko-test-abcd@kiefer.com", "auth.token": "sk-secret-..."
+BRAINTRUST  → "user.email": "herman21@yahoo.com",       "auth.token": "[redacted]"
+PHOENIX     → "user.email": "herman21@yahoo.com",       "auth.token": "[redacted]"  ← same fakes
 ```
 
 Knobs:
-- `redactKeys` — hard-redact specific attribute keys (auth tokens, secrets) instead of masking
-- `passthroughKeys` — skip masking for non-PII keys that pii-proxy might over-detect
+- `redactKeys` — hard-redact specific attribute keys (auth tokens, secrets) instead of masking — replaced with literal `'[redacted]'`
+- `passthroughKeys` — skip masking for non-PII keys that pii-proxy might over-detect (e.g., span markers you need to find your event later)
 - `maskNames` — also mask span name + status_message (default: false)
 - Map is JSON-serializable via `exportProxyMap` / `importProxyMap` for cross-process persistence
+
+pii-proxy auto-detects: emails, phone numbers, IBAN/credit cards, IPs, named entities. Custom-format strings (tracking numbers, internal IDs) need either an explicit `redactKeys` entry or a custom detector — write one if your spans carry custom-shape PII.
 
 This composition is uniquely ours. Phoenix/Braintrust/Datadog don't offer it. The OTel Collector has destructive redaction processors only — non-reversible. Reversible privacy + multi-vendor routing has not existed until now.
 
@@ -293,7 +398,7 @@ Multiple **rules** matching the same span union their target sinks.
 
 ## Status
 
-**v0.0.7 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay primitive (re-route flavor), reversible PII masking via `agent-otel/privacy`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 86 unit tests + e2e tests against real backends (Phoenix, OTLP, S3 via R2, Braintrust, Slack, Postgres). API will change. Open issues, send PRs.
+**v0.0.10 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay (re-route flavor) + replay-execute (counterfactual single-LLM-call flavor), reversible PII masking via `agent-otel/privacy`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 102 unit tests + e2e tests against real backends — including end-to-end verified `withPrivacy(braintrust())` (POST → fetch back, real values masked, fakes present) and `replayLLMCall` against the real Anthropic API. API will change. Open issues, send PRs.
 
 ## Tests
 
@@ -309,9 +414,10 @@ The package is independent — no required hosted account, no preferred backend.
 
 ## What's next
 
-- **`scry mcp`** — same query primitives behind an MCP tool surface, so external agents (Claude Code, etc.) can call `scry` without a shell
-- **Replay-with-mutation** — `swapLLMResponse`, `swapToolOutput` — the seed of self-eval and RL rollouts
-- **Annotation write-back** — agents record observations on past spans
+- **`scry mcp`** — same query primitives behind an MCP tool surface, so external agents (Claude Code, etc.) can call `scry` without a shell. First MCP server in LLM-trace-land.
+- **Auto-instrument adapters** for popular SDKs — `agent-otel/anthropic`, `agent-otel/openai`, `agent-otel/vercel-ai`. Today you instrument manually (or via OpenInference); tomorrow it's one import.
+- **Subtree re-execution** — extend `replayLLMCall` to re-run downstream tools/LLMs from the swap point, not just one node. Bridges to RL rollouts.
+- **Annotation write-back** — agents record observations on past spans (their own labels for self-supervised eval data).
 
 ## License
 

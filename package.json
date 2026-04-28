@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
@@ -18,6 +18,7 @@
     "./sinks/s3": "./src/sinks/s3.ts",
     "./sinks/postgres": "./src/sinks/postgres.ts",
     "./replay": "./src/replay.ts",
+    "./replay-execute": "./src/replay-execute.ts",
     "./privacy": "./src/privacy.ts",
     "./tree": "./src/trace-tree.ts",
     "./cli":  "./src/cli.ts"
@@ -62,14 +63,17 @@
     "@opentelemetry/sdk-trace-base": "^2.0.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.200.0",
     "@aws-sdk/client-s3": "^3.0.0",
-    "postgres": "^3.0.0"
+    "postgres": "^3.0.0",
+    "@anthropic-ai/sdk": "^0.30.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/exporter-trace-otlp-proto": { "optional": true },
     "@aws-sdk/client-s3":                       { "optional": true },
-    "postgres":                                  { "optional": true }
+    "postgres":                                  { "optional": true },
+    "@anthropic-ai/sdk":                         { "optional": true }
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.81.0",
     "@aws-sdk/client-s3": "^3.1037.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
