@@ -75,6 +75,21 @@ interface InstrumentOptions {
    * Values are `{ input, output, cached? }` in USD per token.
    */
   costPerToken?: Record<string, { input: number; output: number; cached?: number }>;
+
+  /**
+   * Provider tag for the span attributes. Defaults to `'openai'`. Set to
+   * `'openrouter'` (or any string) when wrapping an OpenAI-compatible
+   * client pointed at a different provider — keeps `llm.system` /
+   * `gen_ai.system` distinguishable in dashboards.
+   */
+  system?: string;
+
+  /**
+   * Optional callback fired AFTER the span input attributes are stamped.
+   * Lets a wrapper (e.g. OpenRouter) attach extra provider-specific tags
+   * derived from the request body (model namespace, etc.).
+   */
+  onSpanStart?: (span: Span, body: OpenAIChatCompletionParams) => void;
 }
 
 interface OpenAIChatCompletionParams {
@@ -123,6 +138,7 @@ interface OpenAILike {
 
 export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOptions = {}): T {
   const costs = { ...DEFAULT_COSTS_USD, ...(opts.costPerToken ?? {}) };
+  const system = opts.system ?? 'openai';
 
   const wrappedCompletions = new Proxy(client.chat.completions, {
     get(target, prop, receiver) {
@@ -135,12 +151,13 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
           return (value as Function).call(target, body, options);
         }
 
-        const span = tracer.startSpan(`chat openai ${body.model ?? 'unknown'}`, {
+        const span = tracer.startSpan(`chat ${system} ${body.model ?? 'unknown'}`, {
           kind: OTelSpanKind.CLIENT,
         });
 
         try {
-          stampInputAttributes(span, body);
+          stampInputAttributes(span, body, system);
+          opts.onSpanStart?.(span, body);
         } catch (err) {
           console.warn('[agent-otel/openai] input stamping failed:', err);
         }
@@ -193,11 +210,11 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
 // Attribute stampers (OpenInference convention)
 // ---------------------------------------------------------------------------
 
-function stampInputAttributes(span: Span, body: OpenAIChatCompletionParams): void {
+function stampInputAttributes(span: Span, body: OpenAIChatCompletionParams, system: string = 'openai'): void {
   span.setAttribute('openinference.span.kind', 'LLM');
-  span.setAttribute('gen_ai.system', 'openai');
-  span.setAttribute('llm.system',    'openai');
-  span.setAttribute('llm.provider',  'openai');
+  span.setAttribute('gen_ai.system', system);
+  span.setAttribute('llm.system',    system);
+  span.setAttribute('llm.provider',  system);
   if (body.model) {
     span.setAttribute('gen_ai.request.model', body.model);
     span.setAttribute('llm.model_name',       body.model);

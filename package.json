@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,8 @@
     "./replay": "./src/replay.ts",
     "./replay-execute": "./src/replay-execute.ts",
     "./anthropic": "./src/instrument/anthropic.ts",
-    "./openai":    "./src/instrument/openai.ts",
+    "./openai":     "./src/instrument/openai.ts",
+    "./openrouter": "./src/instrument/openrouter.ts",
     "./privacy": "./src/privacy.ts",
     "./tree": "./src/trace-tree.ts",
     "./cli":  "./src/cli.ts"
