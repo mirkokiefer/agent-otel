@@ -180,11 +180,9 @@ test('scry --help: prints help with exit 0', async () => {
   expect(r.out).toContain('scry');
 });
 
-test('scry mcp: not yet implemented', async () => {
-  const r = await captureRun(['mcp']);
-  expect(r.code).toBe(2);
-  expect(r.err).toContain('not yet implemented');
-});
+// `scry mcp` runs the stdio MCP server. We don't exercise the full
+// stdio loop here (it'd block on stdin); coverage for the server itself
+// lives in src/mcp.test.ts which uses an in-memory transport pair.
 
 test('scry unknown cmd: exit 2', async () => {
   const r = await captureRun(['foobar']);

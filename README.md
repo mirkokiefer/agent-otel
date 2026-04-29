@@ -4,7 +4,7 @@
 > `agent-otel` — the OTel-native router + sinks + replay (the substrate).
 > `scry` — the SDK and CLI an agent uses to query its own traces.
 
-🚧 v0.0.13 — pre-alpha, APIs may change. MIT.
+🚧 v0.0.16 — pre-alpha, APIs may change. MIT.
 
 ---
 
@@ -153,6 +153,43 @@ const errors = sink.findSpans(
 const tree = buildTree(sink.getTrace(traceId));
 console.log(renderTree(tree, { attrs: ['llm.cost.total'] }));
 ```
+
+### MCP server (any MCP-aware agent: Claude Code, Cursor, Devin, …)
+
+Run `scry mcp` and any MCP client gets a tool surface for trace inspection. Local-dev pattern is to wire it into your client config so it spawns as a subprocess on demand:
+
+```json
+// .claude/settings.json (Claude Code) — Cursor / Devin / etc. take similar config
+{
+  "mcpServers": {
+    "scry": {
+      "command": "npx",
+      "args":    ["scry", "mcp", "--db", "postgres://localhost/myapp"]
+    }
+  }
+}
+```
+
+Or against a remote scry HTTP endpoint (in-sandbox / org-wide setups where the JWT was minted server-side):
+
+```json
+{
+  "mcpServers": {
+    "scry": {
+      "command": "npx",
+      "args":    ["scry", "mcp", "--endpoint", "https://api.example.com/v1/scry", "--token", "$SCRY_TOKEN"]
+    }
+  }
+}
+```
+
+Tools registered:
+- **`scry_query_jobs`** — list recent agent jobs (filter by status / attribute)
+- **`scry_get_trace`** — render a trace as an ASCII tree by `trace_id`
+- **`scry_causal_chain`** — walk root → target span path
+- **`scry_stats`** — aggregate counts / cost / duration / errors
+
+The same primitives that power the CLI and the SDK, exposed over MCP. First MCP server in LLM-trace-land.
 
 ### CLI (sandbox shell — and dev terminals)
 
@@ -472,7 +509,7 @@ Multiple **rules** matching the same span union their target sinks.
 
 ## Status
 
-**v0.0.13 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay (re-route flavor) + replay-execute (counterfactual single-LLM-call flavor), reversible PII masking via `agent-otel/privacy`, **auto-instrument for `@anthropic-ai/sdk` and `openai`** via `agent-otel/anthropic` + `agent-otel/openai`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 102 unit tests + 8 e2e tests against real backends — including end-to-end verified `withPrivacy(braintrust())` (POST → fetch back, real values masked, fakes present), `replayLLMCall` against real Anthropic, and `instrument(...)` emitting OpenInference spans against both Anthropic and OpenAI APIs. API will change. Open issues, send PRs.
+**v0.0.16 — pre-alpha.** Core router, eight reference sinks (memory/jsonl/otlp/phoenix/braintrust/slack/s3/postgres), replay (re-route flavor) + replay-execute (counterfactual single-LLM-call flavor), reversible PII masking via `agent-otel/privacy`, **auto-instrument for `@anthropic-ai/sdk` and `openai`** via `agent-otel/anthropic` + `agent-otel/openai`, `scry` CLI with query/trace/chain/stats subcommands (local-DB + remote-endpoint modes). 102 unit tests + 8 e2e tests against real backends — including end-to-end verified `withPrivacy(braintrust())` (POST → fetch back, real values masked, fakes present), `replayLLMCall` against real Anthropic, and `instrument(...)` emitting OpenInference spans against both Anthropic and OpenAI APIs. API will change. Open issues, send PRs.
 
 ## Tests
 
@@ -488,7 +525,7 @@ The package is independent — no required hosted account, no preferred backend.
 
 ## What's next
 
-- **`scry mcp`** — same query primitives behind an MCP tool surface, so external agents (Claude Code, Cursor, etc.) can call `scry` without a shell. First MCP server in LLM-trace-land.
+- **MCP HTTP / SSE transport** — `scry mcp --transport=http --port=N` for org-internal multi-user setups. Stdio shipped in v0.0.16; HTTP is incremental from there.
 - **More auto-instrument adapters** — `agent-otel/vercel-ai`, `agent-otel/mastra`, `agent-otel/openai-responses` (the new Responses API). Anthropic + OpenAI Chat Completions shipped. Streaming wrap for both lands next.
 - **Subtree re-execution** — extend `replayLLMCall` to re-run downstream tools/LLMs from the swap point, not just one node. Bridges to RL rollouts.
 - **Healthcare/PHI detector preset** — `withPrivacy(sink, { preset: 'hipaa' })` bundling ICD-10 / NPI / MRN detectors on top of pii-proxy.

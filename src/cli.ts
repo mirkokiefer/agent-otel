@@ -322,7 +322,7 @@ USAGE:
   scry trace tree  <trace_id> [--attrs=k1,k2]       [--output=tree|json]
   scry chain       <trace_id> <span_id>             [--output=json|table]
   scry stats       [--status=X] [--attr=k=v]
-  scry mcp         (not yet implemented in this build)
+  scry mcp         start an MCP server over stdio (for Claude Code / Cursor / any MCP client)
 
 CONNECTION:
   --db=<postgres-url>     direct DB (or set SCRY_DB)
@@ -364,10 +364,25 @@ export async function run(opts: RunOptions): Promise<number> {
 
   const cmd = parsed.positional[0]!;
 
-  // `scry mcp` not yet implemented
+  // `scry mcp` — start MCP server over stdio. The MCP client (Claude Code,
+  // Cursor, Devin, etc.) spawns this as a subprocess and talks JSON-RPC.
+  // STDOUT/STDERR are reserved for the MCP transport when running over
+  // stdio — DO NOT call out()/err() after starting the server, those
+  // would corrupt the protocol. Errors before connect() are still safe.
   if (cmd === 'mcp') {
-    err('`scry mcp` is not yet implemented (Slice 3). Use library or HTTP endpoint instead.');
-    return 2;
+    const cfgMcp = readConfig(parsed.flags);
+    let ins: Inspectable;
+    try {
+      const make = opts.makeInspectable ?? makeInspectable;
+      ins = await make(cfgMcp);
+    } catch (e) {
+      err(`scry mcp: ${(e as Error).message}`);
+      return 2;
+    }
+    const { buildScryMcpServer, runStdioServer } = await import('./mcp.js');
+    const server = buildScryMcpServer({ inspectable: ins });
+    await runStdioServer(server);
+    return 0;
   }
 
   const cfg = readConfig(parsed.flags);

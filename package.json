@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
@@ -22,7 +22,8 @@
     "./anthropic": "./src/instrument/anthropic.ts",
     "./openai": "./src/instrument/openai.ts",
     "./openrouter": "./src/instrument/openrouter.ts",
-    "./vercel-ai":  "./src/instrument/vercel-ai.ts",
+    "./vercel-ai": "./src/instrument/vercel-ai.ts",
+    "./mcp": "./src/mcp.ts",
     "./privacy": "./src/privacy.ts",
     "./tree": "./src/trace-tree.ts",
     "./cli": "./src/cli.ts"
@@ -92,6 +93,7 @@
     "@ai-sdk/anthropic": "^3.0.71",
     "@anthropic-ai/sdk": "^0.81.0",
     "@aws-sdk/client-s3": "^3.1037.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
     "@opentelemetry/resources": "^2.7.0",
