@@ -296,21 +296,17 @@ You're probably doing some of these by hand right now:
 
 `agent-otel` collapses all of that into one OTel emit + a declarative routing config. Same wire format everywhere; backends are just sinks.
 
-## How is this not just OpenInference?
+## `agent-otel` × [OpenInference](https://github.com/Arize-ai/openinference)
 
-Different layers, both useful, **complementary not competing**:
+Different layers in the same pipeline:
 
-| | [OpenInference](https://github.com/Arize-ai/openinference) | `agent-otel` |
+| | OpenInference | `agent-otel` |
 |---|---|---|
-| **What it is** | Spec + auto-instrumentation: wraps Anthropic/OpenAI/LangChain SDK calls so they emit OTel spans with `gen_ai.*` attributes | Router: takes OTel spans (from any source) and fans them out to many sinks per attribute rules |
-| **Lives at** | The SDK boundary (input side) | The export boundary (output side) |
+| **Lives at** | SDK boundary (input) — wraps the LLM SDK so calls emit spans | Export boundary (output) — routes spans to sinks |
 | **Wraps** | Specific LLM SDKs | Nothing — consumes any OTel emitter |
-| **Output** | One stream of standardized spans | N parallel streams to N backends |
-| **Replay** | No | Yes (see below) |
-| **Cost-aware sampling** | No | Yes (`'llm.cost.total': '>1.0'`) |
-| **Vendor neutrality** | Owned by Arize (Phoenix's company) | Independent |
+| **Replay / cost-aware sampling** | No | Yes |
 
-Use them together. OpenInference makes your Anthropic SDK calls emit a span. `agent-otel` decides that span should go to Phoenix + Slack but not Braintrust.
+Use both: OpenInference makes your Anthropic SDK calls emit a span; `agent-otel` decides that span goes to Phoenix + Slack but not Braintrust. Convention compatibility is covered above.
 
 ## Convention modes — OpenInference, OTel GenAI, or both
 
@@ -355,15 +351,14 @@ agent_otel.gen_ai.version        = 1.40
 
 When OTel GenAI agent/tool/eval spans are stable and Phoenix natively renders OTel GenAI attributes well, the default flips from `dup` → `gen_ai` (major-version bump). OpenInference remains supported via `OTEL_SEMCONV_STABILITY_OPT_IN=openinference` for two more minor releases, then dropped. Expected window: 6-12 months. Until then, `dup` carries no breaking changes.
 
-## How is this not just OTel Collector?
+## `agent-otel` × [OTel Collector](https://opentelemetry.io/docs/collector/)
 
-The OTel Collector is the canonical OTLP pipeline for traditional APM. It's a Go binary configured in YAML, with 100+ exporters in contrib. For agent telemetry it falls short on three axes:
+Both route OTel data; different runtimes and different audiences.
 
-1. **Not agent-aware.** The Collector's transform processors don't know `gen_ai.*`, `daslab.reward.*`, or `llm.cost.total` semantically. You'd have to write generic OTTL transforms by hand.
-2. **No agent-specific sink adapters.** Phoenix-as-eval-dataset, Braintrust experiments, OpenPipe training data, RL frameworks — none of these have Collector exporters. We ship them (some today, some planned).
-3. **Wrong runtime for TypeScript agent teams.** The Collector is a sidecar process to operate; we're a library you `npm install`. Different ergonomic story.
+- **Collector** is a Go sidecar configured in YAML — canonical for traditional APM with 100+ exporters in contrib.
+- **agent-otel** is a TypeScript library you `npm install` — agent-aware (knows `gen_ai.*`, `llm.cost.total`), ships sinks for eval/training platforms (Phoenix-as-dataset, Braintrust experiments, OpenPipe) the Collector doesn't have, and the wire format is the same.
 
-If you already run the Collector for traditional APM, run `agent-otel` alongside it — they don't compete. Many teams will end up doing both.
+Run them alongside. They don't compete.
 
 ## Already on Braintrust / Phoenix / Langfuse / LangSmith?
 
