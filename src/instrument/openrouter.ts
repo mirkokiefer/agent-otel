@@ -30,6 +30,7 @@
  */
 
 import { instrument as instrumentOpenAI } from './openai.js';
+import type { ConventionMode } from './convention.js';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
@@ -40,6 +41,11 @@ interface OpenAILike {
 
 interface InstrumentOptions {
   costPerToken?: Record<string, { input: number; output: number; cached?: number }>;
+  /**
+   * Convention mode override. Forwards to the OpenAI instrument.
+   * Defaults to `OTEL_SEMCONV_STABILITY_OPT_IN` (default `'dup'`).
+   */
+  conventionMode?: ConventionMode;
 }
 
 /**
@@ -85,6 +91,8 @@ export async function client(opts: {
   appUrl?: string;
   /** Pass-through cost overrides. */
   costPerToken?: InstrumentOptions['costPerToken'];
+  /** Pass-through convention mode override. */
+  conventionMode?: ConventionMode;
 }): Promise<OpenAILike> {
   let mod: typeof import('openai');
   try {
@@ -106,5 +114,5 @@ export async function client(opts: {
     defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
   });
 
-  return instrument(c as unknown as OpenAILike, { costPerToken: opts.costPerToken });
+  return instrument(c as unknown as OpenAILike, { costPerToken: opts.costPerToken, conventionMode: opts.conventionMode });
 }

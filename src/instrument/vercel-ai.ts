@@ -39,6 +39,8 @@
  */
 
 import { trace, SpanStatusCode, SpanKind as OTelSpanKind, type Span } from '@opentelemetry/api';
+import { resolveConventionMode, emitOpenInference, emitGenAI, type ConventionMode } from './convention.js';
+import { setLLMFoundation, setLLMSampling, setLLMResponse } from './genai-attributes.js';
 
 const tracer = trace.getTracer('agent-otel/vercel-ai', '0.0.14');
 
@@ -61,6 +63,11 @@ interface TracingMiddlewareOptions {
    * Override the span name. Default: `chat <provider> <model>`.
    */
   spanName?: (model: { provider: string; modelId: string }) => string;
+  /**
+   * Convention mode override. When unset, reads
+   * `OTEL_SEMCONV_STABILITY_OPT_IN` (default `'dup'`).
+   */
+  conventionMode?: ConventionMode;
 }
 
 // Loose types — we don't import @ai-sdk/provider's exact LanguageModelV3*
@@ -84,6 +91,7 @@ interface VercelMiddleware {
 }
 
 export function tracingMiddleware(opts: TracingMiddlewareOptions = {}): VercelMiddleware {
+  const mode = resolveConventionMode(opts);
   return {
     middlewareVersion: 'v3',
 
@@ -93,7 +101,7 @@ export function tracingMiddleware(opts: TracingMiddlewareOptions = {}): VercelMi
       const span = tracer.startSpan(spanName, { kind: OTelSpanKind.CLIENT });
 
       try {
-        stampInputAttributes(span, params, model);
+        stampInputAttributes(span, params, model, mode);
       } catch (err) {
         console.warn('[agent-otel/vercel-ai] input stamping failed:', err);
       }
@@ -101,7 +109,7 @@ export function tracingMiddleware(opts: TracingMiddlewareOptions = {}): VercelMi
       try {
         const result = await doGenerate();
         try {
-          stampOutputAttributes(span, model, result, opts.costPerToken);
+          stampOutputAttributes(span, model, result, opts.costPerToken, mode);
           span.setStatus({ code: SpanStatusCode.OK });
         } catch (err) {
           console.warn('[agent-otel/vercel-ai] output stamping failed:', err);
@@ -139,25 +147,26 @@ function normalizeProvider(p: string): string {
   return p.split('.')[0] ?? p;
 }
 
-function stampInputAttributes(span: Span, params: Record<string, unknown>, model: { provider: string; modelId: string }): void {
+function stampInputAttributes(span: Span, params: Record<string, unknown>, model: { provider: string; modelId: string }, mode: ConventionMode): void {
   const provider = normalizeProvider(model.provider);
 
-  span.setAttribute('openinference.span.kind', 'LLM');
-  span.setAttribute('gen_ai.system', provider);
-  span.setAttribute('llm.system',    provider);
-  span.setAttribute('llm.provider',  provider);
-  span.setAttribute('llm.model_name',       model.modelId);
-  span.setAttribute('gen_ai.request.model', model.modelId);
-  if (provider !== model.provider) {
+  setLLMFoundation(span, { provider, model: model.modelId }, mode);
+  if (provider !== model.provider && emitOpenInference(mode)) {
     span.setAttribute('llm.ai_sdk.provider', model.provider);
   }
+  setLLMSampling(span, {
+    temperature: typeof params.temperature === 'number' ? params.temperature : undefined,
+    max_tokens:  typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : undefined,
+    top_p:       typeof params.topP             === 'number' ? params.topP             : undefined,
+    top_k:       typeof params.topK             === 'number' ? params.topK             : undefined,
+    frequency_penalty: typeof params.frequencyPenalty === 'number' ? params.frequencyPenalty : undefined,
+    presence_penalty:  typeof params.presencePenalty  === 'number' ? params.presencePenalty  : undefined,
+    seed:        typeof params.seed              === 'number' ? params.seed              : undefined,
+    stop_sequences: Array.isArray(params.stopSequences) ? (params.stopSequences as string[]) : undefined,
+  }, mode);
 
-  if (typeof params.temperature === 'number') {
-    span.setAttribute('llm.request.temperature', params.temperature);
-  }
-  if (typeof params.maxOutputTokens === 'number') {
-    span.setAttribute('llm.request.max_tokens', params.maxOutputTokens);
-  }
+  // Content stays OpenInference-flat for now; gated on mode.
+  if (!emitOpenInference(mode)) return;
 
   // Vercel AI SDK normalizes prompts to a `prompt: LanguageModelV3Prompt` array.
   // Each element: { role: 'system'|'user'|'assistant'|'tool', content: ... }.
@@ -225,63 +234,90 @@ function stampOutputAttributes(
   span: Span,
   model: { provider: string; modelId: string },
   result: unknown,
-  costPerToken?: Record<string, { input: number; output: number; cached?: number }>,
+  costPerToken: Record<string, { input: number; output: number; cached?: number }> | undefined,
+  mode: ConventionMode,
 ): void {
   const r = result as Record<string, unknown>;
-  span.setAttribute('llm.output_messages.0.message.role', 'assistant');
+  const oi = emitOpenInference(mode);
+  const genai = emitGenAI(mode);
 
-  // result.content is LanguageModelV3Content[] — text + tool-call + reasoning + file blocks.
+  const finishReasonType = r.finishReason && typeof (r.finishReason as Record<string, unknown>).type === 'string'
+    ? String((r.finishReason as Record<string, unknown>).type)
+    : undefined;
+  setLLMResponse(span, {
+    finishReasons: finishReasonType ? [finishReasonType] : undefined,
+  }, mode);
+
+  // Content stays OpenInference-flat (gated on mode).
   let text = '';
   let toolCallCount = 0;
   if (Array.isArray(r.content)) {
     for (const block of r.content as Array<Record<string, unknown>>) {
       if (block.type === 'text' && typeof block.text === 'string') text += block.text;
-      if (block.type === 'tool-call') {
-        const prefix = `llm.output_messages.0.message.tool_calls.${toolCallCount}`;
-        span.setAttribute(`${prefix}.tool_call.id`,                  String(block.toolCallId ?? ''));
-        span.setAttribute(`${prefix}.tool_call.function.name`,       String(block.toolName ?? ''));
-        span.setAttribute(`${prefix}.tool_call.function.arguments`,
-          truncate(JSON.stringify(block.input ?? {}), MAX_MESSAGE_CONTENT));
-        toolCallCount++;
+      if (block.type === 'tool-call') toolCallCount++;
+    }
+  }
+
+  if (oi) {
+    span.setAttribute('llm.output_messages.0.message.role', 'assistant');
+    let tcIdx = 0;
+    if (Array.isArray(r.content)) {
+      for (const block of r.content as Array<Record<string, unknown>>) {
+        if (block.type === 'tool-call') {
+          const prefix = `llm.output_messages.0.message.tool_calls.${tcIdx}`;
+          span.setAttribute(`${prefix}.tool_call.id`,                  String(block.toolCallId ?? ''));
+          span.setAttribute(`${prefix}.tool_call.function.name`,       String(block.toolName ?? ''));
+          span.setAttribute(`${prefix}.tool_call.function.arguments`,
+            truncate(JSON.stringify(block.input ?? {}), MAX_MESSAGE_CONTENT));
+          tcIdx++;
+        }
       }
     }
-  }
-  if (text) span.setAttribute('llm.output_messages.0.message.content', truncate(text, MAX_MESSAGE_CONTENT));
-  if (toolCallCount > 0) span.setAttribute('llm.tool_calls.count', toolCallCount);
-
-  // finishReason: { type, providerReason }
-  if (r.finishReason && typeof (r.finishReason as Record<string, unknown>).type === 'string') {
-    span.setAttribute('llm.response.stop_reason', String((r.finishReason as Record<string, unknown>).type));
+    if (text) span.setAttribute('llm.output_messages.0.message.content', truncate(text, MAX_MESSAGE_CONTENT));
+    if (toolCallCount > 0) span.setAttribute('llm.tool_calls.count', toolCallCount);
   }
 
-  // Tokens — usage shape is { inputTokens: { total }, outputTokens: { total }, ... }
+  // Tokens + cost — bespoke math here (vercel AI SDK's normalized usage
+  // shape pre-dates the cost module's extractors). Mode gates the
+  // attribute name set written.
   const usage = r.usage as Record<string, unknown> | undefined;
-  if (usage) {
-    const input  = readTokenTotal(usage.inputTokens);
-    const output = readTokenTotal(usage.outputTokens);
-    if (input !== undefined)  span.setAttribute('llm.token_count.prompt', input);
-    if (output !== undefined) span.setAttribute('llm.token_count.completion', output);
-    if (input !== undefined && output !== undefined) {
-      span.setAttribute('llm.token_count.total', input + output);
-    }
+  if (!usage) return;
+  const input  = readTokenTotal(usage.inputTokens);
+  const output = readTokenTotal(usage.outputTokens);
+  if (input !== undefined) {
+    if (oi)    span.setAttribute('llm.token_count.prompt',    input);
+    if (genai) span.setAttribute('gen_ai.usage.input_tokens', input);
+  }
+  if (output !== undefined) {
+    if (oi)    span.setAttribute('llm.token_count.completion', output);
+    if (genai) span.setAttribute('gen_ai.usage.output_tokens', output);
+  }
+  if (oi && input !== undefined && output !== undefined) {
+    span.setAttribute('llm.token_count.total', input + output);
+  }
 
-    // cached / reasoning details if present
-    const inputDetails  = usage.inputTokens  as Record<string, unknown> | undefined;
-    const outputDetails = usage.outputTokens as Record<string, unknown> | undefined;
-    const cached        = readTokenTotal(inputDetails?.cached);
-    const reasoning     = readTokenTotal(outputDetails?.reasoning);
-    if (cached    !== undefined && cached    > 0) span.setAttribute('llm.token_count.prompt_details.cache_read', cached);
-    if (reasoning !== undefined && reasoning > 0) span.setAttribute('llm.token_count.completion_details.reasoning', reasoning);
+  const inputDetails  = usage.inputTokens  as Record<string, unknown> | undefined;
+  const outputDetails = usage.outputTokens as Record<string, unknown> | undefined;
+  const cached        = readTokenTotal(inputDetails?.cached);
+  const reasoning     = readTokenTotal(outputDetails?.reasoning);
+  if (cached !== undefined && cached > 0) {
+    if (oi)    span.setAttribute('llm.token_count.prompt_details.cache_read', cached);
+    if (genai) span.setAttribute('gen_ai.usage.cache_read.input_tokens',      cached);
+  }
+  if (reasoning !== undefined && reasoning > 0) {
+    if (oi)    span.setAttribute('llm.token_count.completion_details.reasoning', reasoning);
+    if (genai) span.setAttribute('gen_ai.usage.reasoning.output_tokens',         reasoning);
+  }
 
-    // Cost (best-effort)
-    const rate = costPerToken ? lookupCost(model, costPerToken) : undefined;
-    if (rate && input !== undefined && output !== undefined) {
-      const promptCost = input * rate.input;
-      const cacheCost  = rate.cached && cached ? cached * rate.cached : 0;
-      const completionCost = output * rate.output;
-      const total = promptCost + cacheCost + completionCost;
-      span.setAttribute('llm.cost.total', Number(total.toFixed(8)));
-    }
+  const rate = costPerToken ? lookupCost(model, costPerToken) : undefined;
+  if (rate && input !== undefined && output !== undefined) {
+    const promptCost = input * rate.input;
+    const cacheCost  = rate.cached && cached ? cached * rate.cached : 0;
+    const completionCost = output * rate.output;
+    const total = Number((promptCost + cacheCost + completionCost).toFixed(8));
+    if (oi)    span.setAttribute('llm.cost.total',    total);
+    if (genai) span.setAttribute('gen_ai.cost.total', total);
+    if (genai) span.setAttribute('gen_ai.cost.type',  'estimated');
   }
 }
 

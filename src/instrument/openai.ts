@@ -37,6 +37,8 @@
 import { trace, SpanStatusCode, SpanKind as OTelSpanKind, type Span } from '@opentelemetry/api';
 
 import { calculateCost, recordLLMCall, extractors, type ModelPricing, type PricingSource } from '../cost/index.js';
+import { resolveConventionMode, emitOpenInference, type ConventionMode } from './convention.js';
+import { setLLMFoundation, setLLMSampling, setLLMResponse } from './genai-attributes.js';
 
 const tracer = trace.getTracer('agent-otel/openai', '0.0.18');
 
@@ -83,6 +85,12 @@ interface InstrumentOptions {
    * derived from the request body (model namespace, etc.).
    */
   onSpanStart?: (span: Span, body: OpenAIChatCompletionParams) => void;
+
+  /**
+   * Convention mode override. When unset, reads
+   * `OTEL_SEMCONV_STABILITY_OPT_IN` (default `'dup'`).
+   */
+  conventionMode?: ConventionMode;
 }
 
 interface OpenAIChatCompletionParams {
@@ -165,6 +173,7 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
   const pricing: PricingSource | undefined =
     opts.pricing ?? (opts.costPerToken ? pricingFromCostPerToken(opts.costPerToken) : undefined);
   const system = opts.system ?? 'openai';
+  const mode = resolveConventionMode(opts);
 
   const wrappedCompletions = new Proxy(client.chat.completions, {
     get(target, prop, receiver) {
@@ -182,7 +191,7 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
         });
 
         try {
-          stampInputAttributes(span, body, system);
+          stampInputAttributes(span, body, system, mode);
           opts.onSpanStart?.(span, body);
         } catch (err) {
           console.warn('[agent-otel/openai] input stamping failed:', err);
@@ -193,7 +202,7 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
         return promise
           .then((resp) => {
             try {
-              stampOutputAttributes(span, body, resp, pricing);
+              stampOutputAttributes(span, body, resp, pricing, mode);
               span.setStatus({ code: SpanStatusCode.OK });
             } catch (err) {
               console.warn('[agent-otel/openai] output stamping failed:', err);
@@ -236,22 +245,29 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
 // Attribute stampers (OpenInference convention)
 // ---------------------------------------------------------------------------
 
-function stampInputAttributes(span: Span, body: OpenAIChatCompletionParams, system: string = 'openai'): void {
-  span.setAttribute('openinference.span.kind', 'LLM');
-  span.setAttribute('gen_ai.system', system);
-  span.setAttribute('llm.system',    system);
-  span.setAttribute('llm.provider',  system);
-  if (body.model) {
-    span.setAttribute('gen_ai.request.model', body.model);
-    span.setAttribute('llm.model_name',       body.model);
-  }
-  if (typeof body.temperature === 'number') {
-    span.setAttribute('llm.request.temperature', body.temperature);
-  }
-  const maxTokens = body.max_completion_tokens ?? body.max_tokens;
-  if (typeof maxTokens === 'number') {
-    span.setAttribute('llm.request.max_tokens', maxTokens);
-  }
+function stampInputAttributes(span: Span, body: OpenAIChatCompletionParams, system: string, mode: ConventionMode): void {
+  setLLMFoundation(span, {
+    provider: system,
+    model: body.model,
+    serverAddress: system === 'openai' ? 'api.openai.com' : undefined,
+  }, mode);
+  setLLMSampling(span, {
+    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    max_tokens:  typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens :
+                 typeof body.max_tokens             === 'number' ? body.max_tokens             : undefined,
+    top_p:       typeof body.top_p             === 'number' ? body.top_p             : undefined,
+    frequency_penalty: typeof body.frequency_penalty === 'number' ? body.frequency_penalty : undefined,
+    presence_penalty:  typeof body.presence_penalty  === 'number' ? body.presence_penalty  : undefined,
+    seed:        typeof body.seed              === 'number' ? body.seed              : undefined,
+    stop_sequences: Array.isArray(body.stop) ? (body.stop as string[]) :
+                    typeof body.stop === 'string' ? [body.stop] : undefined,
+    stream:      body.stream === true,
+  }, mode);
+
+  // Content stays OpenInference-flat for now — structured
+  // `gen_ai.input.messages` lands when content emission moves to opt-in.
+  // In `gen_ai`-only mode these flat attrs are skipped.
+  if (!emitOpenInference(mode)) return;
 
   // Per-message input flattening (OpenInference layout)
   let idx = 0;
@@ -320,32 +336,40 @@ function stampOutputAttributes(
   body: OpenAIChatCompletionParams,
   resp: OpenAIChatCompletionResponse,
   pricing: PricingSource | undefined,
+  mode: ConventionMode,
 ): void {
   const choice = resp.choices?.[0];
   if (!choice) return;
-  span.setAttribute('llm.output_messages.0.message.role', choice.message?.role ?? 'assistant');
 
-  const text = choice.message?.content;
-  if (typeof text === 'string' && text) {
-    span.setAttribute('llm.output_messages.0.message.content', truncate(text, MAX_MESSAGE_CONTENT));
-  }
+  setLLMResponse(span, {
+    id: resp.id,
+    model: resp.model,
+    finishReasons: choice.finish_reason ? [choice.finish_reason] : undefined,
+  }, mode);
 
-  if (choice.message?.tool_calls?.length) {
-    let i = 0;
-    for (const tc of choice.message.tool_calls) {
-      const prefix = `llm.output_messages.0.message.tool_calls.${i}`;
-      span.setAttribute(`${prefix}.tool_call.id`, tc.id);
-      span.setAttribute(`${prefix}.tool_call.function.name`, tc.function.name);
-      span.setAttribute(`${prefix}.tool_call.function.arguments`,
-        truncate(tc.function.arguments ?? '', MAX_MESSAGE_CONTENT));
-      i++;
+  if (emitOpenInference(mode)) {
+    span.setAttribute('llm.output_messages.0.message.role', choice.message?.role ?? 'assistant');
+
+    const text = choice.message?.content;
+    if (typeof text === 'string' && text) {
+      span.setAttribute('llm.output_messages.0.message.content', truncate(text, MAX_MESSAGE_CONTENT));
     }
-    span.setAttribute('llm.tool_calls.count', i);
-  }
 
-  if (choice.finish_reason) span.setAttribute('llm.response.stop_reason', choice.finish_reason);
-  if (resp.id)              span.setAttribute('llm.response.id',          resp.id);
-  if (resp.model)           span.setAttribute('llm.response.model',       resp.model);
+    if (choice.message?.tool_calls?.length) {
+      let i = 0;
+      for (const tc of choice.message.tool_calls) {
+        const prefix = `llm.output_messages.0.message.tool_calls.${i}`;
+        span.setAttribute(`${prefix}.tool_call.id`, tc.id);
+        span.setAttribute(`${prefix}.tool_call.function.name`, tc.function.name);
+        span.setAttribute(`${prefix}.tool_call.function.arguments`,
+          truncate(tc.function.arguments ?? '', MAX_MESSAGE_CONTENT));
+        i++;
+      }
+      span.setAttribute('llm.tool_calls.count', i);
+    }
+
+    if (resp.model) span.setAttribute('llm.response.model', resp.model);
+  }
 
   // Token + cost attrs via the cost module. extractors.openai handles
   // the OpenAI-specific cached-subtraction (prompt_tokens is GROSS;
@@ -357,7 +381,7 @@ function stampOutputAttributes(
   const cost = pricing && body.model
     ? calculateCost(body.model, usage, pricing)
     : undefined;
-  recordLLMCall(span, { usage, cost });
+  recordLLMCall(span, { usage, cost, conventionMode: mode });
 }
 
 function flattenContent(content: unknown): string {

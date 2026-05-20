@@ -319,9 +319,9 @@ Three modes, env-var-controlled — matches OpenTelemetry's [`OTEL_SEMCONV_STABI
 
 | Mode | Env var | What gets emitted | When to use |
 |---|---|---|---|
-| `openinference` | (unset) | OpenInference only | Phoenix-only stack, no OTel-GenAI-native consumer |
-| `dup` (default) | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_dup` | Scalars in both name sets; content stays flat OpenInference | **Recommended.** Mixed environments. Phoenix still renders, OTel-native backends pick up `gen_ai.*` for free. |
-| `gen_ai` | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` | OTel GenAI only — including structured `gen_ai.input.messages` JSON | Greenfield, OTel-native backends, willing to lose Phoenix rendering |
+| `openinference` | `OTEL_SEMCONV_STABILITY_OPT_IN=openinference` | OpenInference only (`llm.*`, flat messages) | Phoenix-only stack, no OTel-GenAI-native consumer |
+| `dup` (default) | unset or `gen_ai_dup` | Scalars in both name sets; content stays flat OpenInference | **Recommended.** Mixed environments. Phoenix still renders, OTel-native backends pick up `gen_ai.*` for free. |
+| `gen_ai` | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` | `gen_ai.*` scalars only; content attributes skipped until structured `gen_ai.input.messages` JSON lands in a follow-up | Greenfield, OTel-native backends, willing to skip content until structured emission lands |
 
 Programmatic override for per-client control:
 
@@ -334,18 +334,9 @@ const client = instrument(new Anthropic({...}), { conventionMode: 'dup' });
 
 Scalar dual-emit adds ~1-2 KB per span — negligible against the 64 KB raw-request blob already emitted. In exchange, the same span renders cleanly in Phoenix *and* shows up as a GenAI span in Honeycomb / Langfuse / DataDog with no flag set. The library serves both audiences out of the box.
 
-### Content attribute pollution — why structured messages are opt-in only
+### Content attribute pollution — why content stays flat
 
-The cheap part of dual-emit is scalars (model, tokens, finish reasons — ~10 attributes, ~1-2 KB). The expensive part is content: re-emitting full message bodies as `gen_ai.input.messages` JSON while still keeping flattened `llm.input_messages.N.*` would double per-span payload for the message content. OTel's own guidance is to gate content attributes on opt-in; we do the same. `gen_ai_dup` emits scalars in both name sets but keeps content flat; only `gen_ai_latest_experimental` switches to structured-JSON content.
-
-### Convention version tags
-
-Every span carries resource attributes so consumers can introspect the schema version:
-
-```
-agent_otel.openinference.version = 1.x
-agent_otel.gen_ai.version        = 1.40
-```
+The cheap part of dual-emit is scalars (model, tokens, finish reasons — ~10 attributes, ~1-2 KB). The expensive part is content: re-emitting full message bodies as `gen_ai.input.messages` JSON while still keeping flattened `llm.input_messages.N.*` would double per-span payload for message content. OTel's own guidance is to gate content attributes on opt-in; we currently keep content flat-OpenInference across `openinference` and `dup` modes. Structured `gen_ai.input.messages` JSON for `gen_ai` mode lands in a follow-up — for now, `gen_ai` mode emits scalars only and content attributes are skipped.
 
 ### Deprecation cadence
 

@@ -45,6 +45,8 @@
 
 import { trace, SpanStatusCode, SpanKind as OTelSpanKind, type Span } from '@opentelemetry/api';
 import { calculateCost, recordLLMCall, extractors, type ModelPricing, type PricingSource } from '../cost/index.js';
+import { resolveConventionMode, emitOpenInference, type ConventionMode } from './convention.js';
+import { setLLMFoundation, setLLMSampling, setLLMResponse } from './genai-attributes.js';
 
 const tracer = trace.getTracer('agent-otel/anthropic', '0.0.18');
 
@@ -77,7 +79,16 @@ interface InstrumentOptions {
    * below converts per-token → per-million on the fly.
    */
   costPerToken?: Record<string, { input: number; output: number; cacheRead?: number }>;
+
+  /**
+   * Convention mode override. When unset, reads
+   * `OTEL_SEMCONV_STABILITY_OPT_IN` (default `'dup'` — emit both
+   * OpenInference and OTel-GenAI scalar attributes). See `convention.ts`.
+   */
+  conventionMode?: ConventionMode;
 }
+
+const ANTHROPIC_API_HOST = 'api.anthropic.com';
 
 /**
  * Adapt the legacy {@link InstrumentOptions.costPerToken} table to a
@@ -144,6 +155,11 @@ export function instrument<T extends AnthropicLike>(client: T, opts: InstrumentO
   const pricing: PricingSource | undefined =
     opts.pricing ?? (opts.costPerToken ? pricingFromCostPerToken(opts.costPerToken) : undefined);
 
+  // Resolve convention mode once per instrument() call. Cheap to compute
+  // and stable for the client's lifetime — driven by env var unless
+  // overridden via opts.conventionMode.
+  const mode = resolveConventionMode(opts);
+
   const wrappedMessages = new Proxy(client.messages, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -163,7 +179,7 @@ export function instrument<T extends AnthropicLike>(client: T, opts: InstrumentO
         });
 
         try {
-          stampInputAttributes(span, body);
+          stampInputAttributes(span, body, mode);
         } catch (err) {
           // Never let instrumentation kill the request. Log and continue.
           console.warn('[agent-otel/anthropic] input stamping failed:', err);
@@ -174,7 +190,7 @@ export function instrument<T extends AnthropicLike>(client: T, opts: InstrumentO
         return promise
           .then((resp) => {
             try {
-              stampOutputAttributes(span, body, resp, pricing);
+              stampOutputAttributes(span, body, resp, pricing, mode);
               span.setStatus({ code: SpanStatusCode.OK });
             } catch (err) {
               console.warn('[agent-otel/anthropic] output stamping failed:', err);
@@ -208,21 +224,23 @@ export function instrument<T extends AnthropicLike>(client: T, opts: InstrumentO
 // Attribute stampers (OpenInference convention)
 // ---------------------------------------------------------------------------
 
-function stampInputAttributes(span: Span, body: AnthropicMessageCreateParams): void {
-  span.setAttribute('openinference.span.kind', 'LLM');
-  span.setAttribute('gen_ai.system', 'anthropic');
-  span.setAttribute('llm.system',    'anthropic');
-  span.setAttribute('llm.provider',  'anthropic');
-  if (body.model) {
-    span.setAttribute('gen_ai.request.model', body.model);
-    span.setAttribute('llm.model_name',       body.model);
-  }
-  if (typeof body.temperature === 'number') {
-    span.setAttribute('llm.request.temperature', body.temperature);
-  }
-  if (typeof body.max_tokens === 'number') {
-    span.setAttribute('llm.request.max_tokens', body.max_tokens);
-  }
+function stampInputAttributes(span: Span, body: AnthropicMessageCreateParams, mode: ConventionMode): void {
+  setLLMFoundation(span, {
+    provider: 'anthropic',
+    model: body.model,
+    serverAddress: ANTHROPIC_API_HOST,
+  }, mode);
+  setLLMSampling(span, {
+    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    max_tokens:  typeof body.max_tokens  === 'number' ? body.max_tokens  : undefined,
+    stream: body.stream === true,
+  }, mode);
+
+  // Input messages stay in OpenInference flat form for now — structured
+  // `gen_ai.input.messages` (single JSON attr per the OTel-GenAI spec)
+  // lands when content emission moves to opt-in. In `gen_ai`-only mode
+  // these flat attrs are skipped; consumers get scalars only until then.
+  if (!emitOpenInference(mode)) return;
 
   // System prompt — Anthropic's body.system is string OR array of content blocks.
   const sysText = typeof body.system === 'string'
@@ -298,38 +316,47 @@ function stampOutputAttributes(
   body: AnthropicMessageCreateParams,
   resp: AnthropicMessageResponse,
   pricing: PricingSource | undefined,
+  mode: ConventionMode,
 ): void {
-  // Output assistant message
-  span.setAttribute('llm.output_messages.0.message.role', 'assistant');
+  // Response-side scalars (id, finish reasons) via the mode-aware helper.
+  setLLMResponse(span, {
+    id: resp.id,
+    finishReasons: resp.stop_reason ? [resp.stop_reason] : undefined,
+  }, mode);
 
+  // Output messages stay OpenInference-flat for now (see input note).
   let text = '';
   let toolCallCount = 0;
   for (const block of resp.content ?? []) {
     if (block.type === 'text' && typeof block.text === 'string') text += block.text;
-    if (block.type === 'tool_use') {
-      const prefix = `llm.output_messages.0.message.tool_calls.${toolCallCount}`;
-      span.setAttribute(`${prefix}.tool_call.id`,                  String(block.id ?? ''));
-      span.setAttribute(`${prefix}.tool_call.function.name`,       String(block.name ?? ''));
-      span.setAttribute(`${prefix}.tool_call.function.arguments`,
-        truncate(JSON.stringify(block.input ?? {}), MAX_MESSAGE_CONTENT));
-      toolCallCount++;
-    }
+    if (block.type === 'tool_use') toolCallCount++;
   }
-  if (text) span.setAttribute('llm.output_messages.0.message.content', truncate(text, MAX_MESSAGE_CONTENT));
-  if (toolCallCount > 0) span.setAttribute('llm.tool_calls.count', toolCallCount);
-  if (resp.stop_reason) span.setAttribute('llm.response.stop_reason', resp.stop_reason);
-  if (resp.id) span.setAttribute('llm.response.id', resp.id);
 
-  // Token + cost attrs via the cost module. recordLLMCall dual-emits
-  // OpenInference (llm.token_count.*, llm.cost.total) AND OTel-GenAI
-  // (gen_ai.usage.*, gen_ai.cost.total + per-bucket breakdown).
-  // When `pricing` is undefined we still emit token counts; cost is
-  // simply omitted (`gen_ai.cost.type` not set either).
+  if (emitOpenInference(mode)) {
+    span.setAttribute('llm.output_messages.0.message.role', 'assistant');
+    let tcIdx = 0;
+    for (const block of resp.content ?? []) {
+      if (block.type === 'tool_use') {
+        const prefix = `llm.output_messages.0.message.tool_calls.${tcIdx}`;
+        span.setAttribute(`${prefix}.tool_call.id`,                  String(block.id ?? ''));
+        span.setAttribute(`${prefix}.tool_call.function.name`,       String(block.name ?? ''));
+        span.setAttribute(`${prefix}.tool_call.function.arguments`,
+          truncate(JSON.stringify(block.input ?? {}), MAX_MESSAGE_CONTENT));
+        tcIdx++;
+      }
+    }
+    if (text) span.setAttribute('llm.output_messages.0.message.content', truncate(text, MAX_MESSAGE_CONTENT));
+    if (toolCallCount > 0) span.setAttribute('llm.tool_calls.count', toolCallCount);
+  }
+
+  // Token + cost attrs via the cost module. recordLLMCall is mode-aware:
+  // 'openinference' → `llm.*` only; 'gen_ai' → `gen_ai.*` only; 'dup' → both.
+  // When `pricing` is undefined we still emit token counts; cost is omitted.
   const usage = extractors.anthropic(resp.usage);
   const cost = pricing && body.model
     ? calculateCost(body.model, usage, pricing)
     : undefined;
-  recordLLMCall(span, { usage, cost });
+  recordLLMCall(span, { usage, cost, conventionMode: mode });
 }
 
 function flattenContent(content: unknown): string {
