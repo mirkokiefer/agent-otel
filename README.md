@@ -4,7 +4,7 @@
 > `agent-otel` — the OTel-native router + sinks + replay (the substrate).
 > `scry` — the SDK and CLI an agent uses to query its own traces.
 
-🚧 v0.0.16 — pre-alpha, APIs may change. MIT.
+🚧 v0.0.19 — pre-alpha, APIs may change. MIT.
 
 ---
 
