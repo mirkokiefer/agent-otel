@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
@@ -26,7 +26,8 @@
     "./mcp": "./src/mcp.ts",
     "./privacy": "./src/privacy.ts",
     "./tree": "./src/trace-tree.ts",
-    "./cli": "./src/cli.ts"
+    "./cli": "./src/cli.ts",
+    "./cost": "./src/cost/index.ts"
   },
   "bin": {
     "scry": "./bin/scry"

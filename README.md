@@ -233,6 +233,58 @@ Composes naturally with shell tooling: `scry query --output=json | jq`, `scry st
 
 ---
 
+## Cost tracking — `agent-otel/cost`
+
+Standard contract + OTel-native attributes for LLM cost. Three primitives:
+
+```ts
+import {
+  calculateCost,
+  recordLLMCall,
+  extractors,
+  type PricingSource,
+} from 'agent-otel/cost';
+
+// You supply pricing — agent-otel ships none. (Tables go stale; we don't
+// want to be the maintainer.) See examples/pricing-static.ts.
+const myPricing: PricingSource = { lookup: (m) => MY_TABLE[m] };
+
+// In your provider stream's finish handler:
+const usage = extractors.openai(chunk.usage);          // → cross-provider LLMUsage
+const cost  = calculateCost('gpt-5', usage, myPricing); // → { cost, costType, breakdown }
+recordLLMCall(span, { usage, cost });                   // → dual-write attrs
+```
+
+The span now carries **both** OpenInference (`llm.cost.total`, `llm.token_count.*`) **and** OTel-GenAI (`gen_ai.cost.total`, `gen_ai.usage.input_tokens`) — Phoenix, Arize, Langfuse, scry, Datadog GenAI, and any future OTel-GenAI consumer read it identically.
+
+### Why "bring your own pricing"?
+
+Pricing data goes stale weekly (new models drop, providers re-price prompt cache). Baking a table into agent-otel would mean a release every time. We ship the **contract** — you wire a static map, fetch from [models.dev](https://models.dev), pull LiteLLM's JSON, hit your billing DB, whatever. See `examples/pricing-*.ts`.
+
+### What you get on the span
+
+| Attribute | Both writes (OpenInference + OTel-GenAI) |
+|---|---|
+| Uncached input tokens | `llm.token_count.prompt`, `gen_ai.usage.input_tokens` |
+| Output tokens | `llm.token_count.completion`, `gen_ai.usage.output_tokens` |
+| Cache read / write | `llm.token_count.prompt_details.cache_read/write` |
+| Reasoning tokens | `llm.token_count.completion_details.reasoning` |
+| Total USD cost | `llm.cost.total`, `gen_ai.cost.total` |
+| Per-bucket breakdown | `gen_ai.cost.input/output/cache_read/cache_write/reasoning` |
+| Provenance | `gen_ai.cost.type` — `'actual' \| 'estimated' \| 'unknown'` |
+
+Provider-reported actuals (OpenRouter exposes `usage.cost`) are preferred over table-based estimates — set on `LLMUsage.provider_cost` by the OpenAI extractor when present.
+
+### Provider extractors
+
+Pure functions, raw provider chunk → `LLMUsage`. Each knows the provider's quirks (OpenAI subtracts `cached_tokens` from `prompt_tokens`; Anthropic's `input_tokens` is already uncached; Gemini uses `cachedContentTokenCount`).
+
+```ts
+extractors.openai(chunk.usage)      // OpenAI / OpenRouter / Azure OpenAI
+extractors.anthropic(message.usage) // Claude / Bedrock Anthropic
+extractors.gemini(response.usageMetadata)
+```
+
 ## What this replaces
 
 You're probably doing some of these by hand right now:
