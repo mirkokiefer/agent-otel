@@ -360,11 +360,11 @@ Both route OTel data; different runtimes and different audiences.
 
 Run them alongside. They don't compete.
 
-## Already on Braintrust / Phoenix / Langfuse / LangSmith?
+## `agent-otel` × Braintrust / Phoenix / Langfuse / LangSmith
 
-Don't switch — **compose**. Each of these is your eval/observability backend; we make them stronger without you re-instrumenting anything.
+`agent-otel` sits in front of these — your eval/observability backend keeps its job; PII masking, a vendor-neutral archive, programmatic agent-side query, and replay layer on top.
 
-For an existing Braintrust user (the same pattern works for Phoenix / Langfuse / LangSmith):
+For an existing Braintrust user (same pattern works for Phoenix / Langfuse / LangSmith):
 
 ```ts
 import { defineRouter } from 'agent-otel';
@@ -390,7 +390,7 @@ const router = defineRouter({
 });
 ```
 
-What this gets you that Braintrust alone doesn't:
+What this adds on top of Braintrust:
 
 | Need | Braintrust alone | + agent-otel |
 |---|---|---|
@@ -403,7 +403,7 @@ What this gets you that Braintrust alone doesn't:
 | **MCP server** for Claude Code / Cursor to query traces | ✗ | planned |
 | **Lock-in escape** — leave whenever | hard | trivial; spans archived in your own store |
 
-The pitch isn't *replace your vendor*. It's *keep what works, add what's missing*.
+Keep what works, add what's missing.
 
 ## Replay — retroactive routing
 
