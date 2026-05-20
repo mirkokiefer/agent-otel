@@ -312,6 +312,49 @@ Different layers, both useful, **complementary not competing**:
 
 Use them together. OpenInference makes your Anthropic SDK calls emit a span. `agent-otel` decides that span should go to Phoenix + Slack but not Braintrust.
 
+## Convention modes — OpenInference, OTel GenAI, or both
+
+`agent-otel`'s instrumentations emit LLM telemetry under two parallel attribute name sets:
+
+- **OpenInference** (`llm.*`, `openinference.span.kind`, flattened messages) — production-mature, what Phoenix renders natively.
+- **OTel GenAI semantic conventions** (`gen_ai.*`, `gen_ai.operation.name`, structured messages) — the official direction; client spans went stable in early 2026, agent/tool spans still Development.
+
+Three modes, env-var-controlled — matches OpenTelemetry's [`OTEL_SEMCONV_STABILITY_OPT_IN`](https://opentelemetry.io/docs/specs/semconv/general/attribute-naming/#opt-in-attributes) pattern used for the HTTP semconv migration. Reusing the OTel-canonical env var means ops folks recognize it; no Daslab-specific flags.
+
+| Mode | Env var | What gets emitted | When to use |
+|---|---|---|---|
+| `openinference` | (unset) | OpenInference only | Phoenix-only stack, no OTel-GenAI-native consumer |
+| `dup` (default) | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_dup` | Scalars in both name sets; content stays flat OpenInference | **Recommended.** Mixed environments. Phoenix still renders, OTel-native backends pick up `gen_ai.*` for free. |
+| `gen_ai` | `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` | OTel GenAI only — including structured `gen_ai.input.messages` JSON | Greenfield, OTel-native backends, willing to lose Phoenix rendering |
+
+Programmatic override for per-client control:
+
+```ts
+import { instrument } from 'agent-otel/anthropic';
+const client = instrument(new Anthropic({...}), { conventionMode: 'dup' });
+```
+
+### Why `dup` is the default
+
+Scalar dual-emit adds ~1-2 KB per span — negligible against the 64 KB raw-request blob already emitted. In exchange, the same span renders cleanly in Phoenix *and* shows up as a GenAI span in Honeycomb / Langfuse / DataDog with no flag set. The library serves both audiences out of the box.
+
+### Content attribute pollution — why structured messages are opt-in only
+
+The cheap part of dual-emit is scalars (model, tokens, finish reasons — ~10 attributes, ~1-2 KB). The expensive part is content: re-emitting full message bodies as `gen_ai.input.messages` JSON while still keeping flattened `llm.input_messages.N.*` would double per-span payload for the message content. OTel's own guidance is to gate content attributes on opt-in; we do the same. `gen_ai_dup` emits scalars in both name sets but keeps content flat; only `gen_ai_latest_experimental` switches to structured-JSON content.
+
+### Convention version tags
+
+Every span carries resource attributes so consumers can introspect the schema version:
+
+```
+agent_otel.openinference.version = 1.x
+agent_otel.gen_ai.version        = 1.40
+```
+
+### Deprecation cadence
+
+When OTel GenAI agent/tool/eval spans are stable and Phoenix natively renders OTel GenAI attributes well, the default flips from `dup` → `gen_ai` (major-version bump). OpenInference remains supported via `OTEL_SEMCONV_STABILITY_OPT_IN=openinference` for two more minor releases, then dropped. Expected window: 6-12 months. Until then, `dup` carries no breaking changes.
+
 ## How is this not just OTel Collector?
 
 The OTel Collector is the canonical OTLP pipeline for traditional APM. It's a Go binary configured in YAML, with 100+ exporters in contrib. For agent telemetry it falls short on three axes:
