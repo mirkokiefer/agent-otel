@@ -44,20 +44,9 @@
  */
 
 import { trace, SpanStatusCode, SpanKind as OTelSpanKind, type Span } from '@opentelemetry/api';
+import { calculateCost, recordLLMCall, extractors, type ModelPricing, type PricingSource } from '../cost/index.js';
 
-const tracer = trace.getTracer('agent-otel/anthropic', '0.0.11');
-
-// Per-token costs in USD (input / output) for Anthropic models we know.
-// Conservative defaults; `instrument(client, { costPerToken })` overrides.
-const DEFAULT_COSTS_USD: Record<string, { input: number; output: number; cacheRead?: number }> = {
-  'claude-opus-4-7':       { input: 15  / 1_000_000, output: 75   / 1_000_000, cacheRead: 1.5 / 1_000_000 },
-  'claude-opus-4-6':       { input: 15  / 1_000_000, output: 75   / 1_000_000, cacheRead: 1.5 / 1_000_000 },
-  'claude-sonnet-4-7':     { input: 3   / 1_000_000, output: 15   / 1_000_000, cacheRead: 0.3 / 1_000_000 },
-  'claude-sonnet-4-6':     { input: 3   / 1_000_000, output: 15   / 1_000_000, cacheRead: 0.3 / 1_000_000 },
-  'claude-haiku-4-5':      { input: 1   / 1_000_000, output: 5    / 1_000_000, cacheRead: 0.1 / 1_000_000 },
-  'claude-3-5-sonnet':     { input: 3   / 1_000_000, output: 15   / 1_000_000 },
-  'claude-3-5-haiku':      { input: 0.8 / 1_000_000, output: 4    / 1_000_000 },
-};
+const tracer = trace.getTracer('agent-otel/anthropic', '0.0.18');
 
 const MAX_RAW_REQUEST = 64_000;
 const MAX_MESSAGE_CONTENT = 16_000;
@@ -71,12 +60,47 @@ function truncate(s: string, limit: number): string {
 
 interface InstrumentOptions {
   /**
-   * Override the per-token cost table. Keys are model names; values are
-   * `{ input, output, cacheRead? }` in USD per token (NOT per million).
-   * Use to handle custom-priced models or stay current with Anthropic's
-   * pricing without waiting for an agent-otel release.
+   * Pricing source for cost calculation. agent-otel ships no pricing
+   * data — bring your own. Static table, models.dev fetch, LiteLLM
+   * JSON, custom DB — anything that implements
+   * {@link PricingSource}. When absent (and `costPerToken` isn't set
+   * either), token counts still flow to the span but `llm.cost.total`
+   * / `gen_ai.cost.total` are omitted. See `examples/pricing-*.ts`.
+   */
+  pricing?: PricingSource;
+
+  /**
+   * Legacy per-token override (still supported). Keys are model names;
+   * values are `{ input, output, cacheRead? }` in USD per token (NOT
+   * per million). Prefer `pricing` for new code — same data, just
+   * expressed in the canonical {@link PricingSource} shape. Adapter
+   * below converts per-token → per-million on the fly.
    */
   costPerToken?: Record<string, { input: number; output: number; cacheRead?: number }>;
+}
+
+/**
+ * Adapt the legacy {@link InstrumentOptions.costPerToken} table to a
+ * {@link PricingSource}. Per-token USD rates become per-million; the
+ * optional `cacheRead` token rate becomes a multiplier on `input`.
+ */
+function pricingFromCostPerToken(
+  table: Record<string, { input: number; output: number; cacheRead?: number }>,
+): PricingSource {
+  return {
+    lookup(model: string): ModelPricing | undefined {
+      const entry = table[model];
+      if (!entry) return undefined;
+      const out: ModelPricing = {
+        input:  entry.input  * 1_000_000,
+        output: entry.output * 1_000_000,
+      };
+      if (entry.cacheRead && entry.input > 0) {
+        out.cache_read_multiplier = entry.cacheRead / entry.input;
+      }
+      return out;
+    },
+  };
 }
 
 interface AnthropicMessageCreateParams {
@@ -114,7 +138,11 @@ interface AnthropicLike {
 }
 
 export function instrument<T extends AnthropicLike>(client: T, opts: InstrumentOptions = {}): T {
-  const costs = { ...DEFAULT_COSTS_USD, ...(opts.costPerToken ?? {}) };
+  // Resolve the pricing source: explicit `pricing` wins; otherwise wrap
+  // a legacy `costPerToken` table; otherwise undefined (cost is omitted
+  // from spans but token counts still flow).
+  const pricing: PricingSource | undefined =
+    opts.pricing ?? (opts.costPerToken ? pricingFromCostPerToken(opts.costPerToken) : undefined);
 
   const wrappedMessages = new Proxy(client.messages, {
     get(target, prop, receiver) {
@@ -146,7 +174,7 @@ export function instrument<T extends AnthropicLike>(client: T, opts: InstrumentO
         return promise
           .then((resp) => {
             try {
-              stampOutputAttributes(span, body, resp, costs);
+              stampOutputAttributes(span, body, resp, pricing);
               span.setStatus({ code: SpanStatusCode.OK });
             } catch (err) {
               console.warn('[agent-otel/anthropic] output stamping failed:', err);
@@ -269,7 +297,7 @@ function stampOutputAttributes(
   span: Span,
   body: AnthropicMessageCreateParams,
   resp: AnthropicMessageResponse,
-  costs: Record<string, { input: number; output: number; cacheRead?: number }>,
+  pricing: PricingSource | undefined,
 ): void {
   // Output assistant message
   span.setAttribute('llm.output_messages.0.message.role', 'assistant');
@@ -292,35 +320,16 @@ function stampOutputAttributes(
   if (resp.stop_reason) span.setAttribute('llm.response.stop_reason', resp.stop_reason);
   if (resp.id) span.setAttribute('llm.response.id', resp.id);
 
-  // Token counts
-  const u = resp.usage ?? {};
-  if (typeof u.input_tokens === 'number') {
-    span.setAttribute('llm.token_count.prompt', u.input_tokens);
-  }
-  if (typeof u.output_tokens === 'number') {
-    span.setAttribute('llm.token_count.completion', u.output_tokens);
-  }
-  if (typeof u.input_tokens === 'number' && typeof u.output_tokens === 'number') {
-    span.setAttribute('llm.token_count.total', u.input_tokens + u.output_tokens);
-  }
-  if (typeof u.cache_read_input_tokens === 'number' && u.cache_read_input_tokens > 0) {
-    span.setAttribute('llm.token_count.prompt_details.cache_read', u.cache_read_input_tokens);
-  }
-  if (typeof u.cache_creation_input_tokens === 'number' && u.cache_creation_input_tokens > 0) {
-    span.setAttribute('llm.token_count.prompt_details.cache_write', u.cache_creation_input_tokens);
-  }
-
-  // Cost (best-effort)
-  const rate = body.model ? costs[body.model] : undefined;
-  if (rate) {
-    const promptCost = (u.input_tokens ?? 0) * rate.input;
-    const cacheCost  = rate.cacheRead && u.cache_read_input_tokens
-      ? u.cache_read_input_tokens * rate.cacheRead
-      : 0;
-    const completionCost = (u.output_tokens ?? 0) * rate.output;
-    const total = promptCost + cacheCost + completionCost;
-    span.setAttribute('llm.cost.total', Number(total.toFixed(8)));
-  }
+  // Token + cost attrs via the cost module. recordLLMCall dual-emits
+  // OpenInference (llm.token_count.*, llm.cost.total) AND OTel-GenAI
+  // (gen_ai.usage.*, gen_ai.cost.total + per-bucket breakdown).
+  // When `pricing` is undefined we still emit token counts; cost is
+  // simply omitted (`gen_ai.cost.type` not set either).
+  const usage = extractors.anthropic(resp.usage);
+  const cost = pricing && body.model
+    ? calculateCost(body.model, usage, pricing)
+    : undefined;
+  recordLLMCall(span, { usage, cost });
 }
 
 function flattenContent(content: unknown): string {

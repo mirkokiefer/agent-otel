@@ -36,28 +36,9 @@
 
 import { trace, SpanStatusCode, SpanKind as OTelSpanKind, type Span } from '@opentelemetry/api';
 
-const tracer = trace.getTracer('agent-otel/openai', '0.0.12');
+import { calculateCost, recordLLMCall, extractors, type ModelPricing, type PricingSource } from '../cost/index.js';
 
-// Per-token costs in USD (input / output) for OpenAI models we know.
-// Pricing is best-effort and goes stale — override via instrument({ costPerToken }).
-// Values in USD per token (NOT per million); divide the published $/M number by 1M.
-const DEFAULT_COSTS_USD: Record<string, { input: number; output: number; cached?: number }> = {
-  // GPT-5.5 family (2026)
-  'gpt-5.5':            { input: 5    / 1_000_000, output: 25   / 1_000_000, cached: 0.5  / 1_000_000 },
-  'gpt-5.5-pro':        { input: 15   / 1_000_000, output: 75   / 1_000_000, cached: 1.5  / 1_000_000 },
-  // GPT-5 family (2025)
-  'gpt-5':              { input: 1.25 / 1_000_000, output: 10   / 1_000_000, cached: 0.125 / 1_000_000 },
-  'gpt-5-mini':         { input: 0.25 / 1_000_000, output: 2    / 1_000_000, cached: 0.025 / 1_000_000 },
-  'gpt-5-nano':         { input: 0.05 / 1_000_000, output: 0.4  / 1_000_000, cached: 0.005 / 1_000_000 },
-  'gpt-5-pro':          { input: 15   / 1_000_000, output: 60   / 1_000_000, cached: 1.5  / 1_000_000 },
-  // GPT-4.1 family (2025)
-  'gpt-4.1':            { input: 2    / 1_000_000, output: 8    / 1_000_000, cached: 0.5  / 1_000_000 },
-  'gpt-4.1-mini':       { input: 0.4  / 1_000_000, output: 1.6  / 1_000_000, cached: 0.1  / 1_000_000 },
-  'gpt-4.1-nano':       { input: 0.1  / 1_000_000, output: 0.4  / 1_000_000, cached: 0.025 / 1_000_000 },
-  // GPT-4o family
-  'gpt-4o':             { input: 2.5  / 1_000_000, output: 10   / 1_000_000, cached: 1.25 / 1_000_000 },
-  'gpt-4o-mini':        { input: 0.15 / 1_000_000, output: 0.6  / 1_000_000, cached: 0.075 / 1_000_000 },
-};
+const tracer = trace.getTracer('agent-otel/openai', '0.0.18');
 
 const MAX_RAW_REQUEST = 64_000;
 const MAX_MESSAGE_CONTENT = 16_000;
@@ -70,9 +51,21 @@ function truncate(s: string, limit: number): string {
 
 interface InstrumentOptions {
   /**
-   * Override the per-token cost table. Keys are model names (or model
-   * prefixes that startsWith match — `gpt-5.5` matches `gpt-5.5-2026-04-23`).
-   * Values are `{ input, output, cached? }` in USD per token.
+   * Pricing source for cost calculation. agent-otel ships no pricing
+   * data — bring your own (see `examples/pricing-*.ts`). When absent
+   * (and `costPerToken` isn't set either), token counts still flow
+   * to the span but `llm.cost.total` / `gen_ai.cost.total` are
+   * omitted.
+   */
+  pricing?: PricingSource;
+
+  /**
+   * Legacy per-token override. Keys are model names; values are
+   * `{ input, output, cached? }` in USD per token. Prefer `pricing`
+   * for new code. Adapter converts per-token → per-million for the
+   * canonical {@link PricingSource} shape. OpenAI ships date-suffixed
+   * IDs (`gpt-5.5-2026-04-23`); the longest-prefix lookup the legacy
+   * version did is preserved.
    */
   costPerToken?: Record<string, { input: number; output: number; cached?: number }>;
 
@@ -136,8 +129,41 @@ interface OpenAILike {
   [k: string]: unknown;
 }
 
+/**
+ * Adapt the legacy {@link InstrumentOptions.costPerToken} table to a
+ * {@link PricingSource}. Per-token USD rates → per-million; OpenAI's
+ * date-suffixed model IDs (`gpt-5.5-2026-04-23`) fall back to the
+ * longest-prefix entry — matches the historical lookup behaviour.
+ */
+function pricingFromCostPerToken(
+  table: Record<string, { input: number; output: number; cached?: number }>,
+): PricingSource {
+  // Pre-sort prefixes by length once for O(log) lookup amortisation
+  // across many requests on the same instrumented client.
+  const prefixes = Object.keys(table).sort((a, b) => b.length - a.length);
+  return {
+    lookup(model: string): ModelPricing | undefined {
+      const exact = table[model];
+      const entry = exact ?? table[prefixes.find(p => model.startsWith(p)) ?? ''];
+      if (!entry) return undefined;
+      const out: ModelPricing = {
+        input:  entry.input  * 1_000_000,
+        output: entry.output * 1_000_000,
+      };
+      if (entry.cached && entry.input > 0) {
+        out.cache_read_multiplier = entry.cached / entry.input;
+      }
+      return out;
+    },
+  };
+}
+
 export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOptions = {}): T {
-  const costs = { ...DEFAULT_COSTS_USD, ...(opts.costPerToken ?? {}) };
+  // Resolve the pricing source: explicit `pricing` wins; otherwise wrap
+  // a legacy `costPerToken` table; otherwise undefined (cost is omitted
+  // from spans but token counts still flow).
+  const pricing: PricingSource | undefined =
+    opts.pricing ?? (opts.costPerToken ? pricingFromCostPerToken(opts.costPerToken) : undefined);
   const system = opts.system ?? 'openai';
 
   const wrappedCompletions = new Proxy(client.chat.completions, {
@@ -167,7 +193,7 @@ export function instrument<T extends OpenAILike>(client: T, opts: InstrumentOpti
         return promise
           .then((resp) => {
             try {
-              stampOutputAttributes(span, body, resp, costs);
+              stampOutputAttributes(span, body, resp, pricing);
               span.setStatus({ code: SpanStatusCode.OK });
             } catch (err) {
               console.warn('[agent-otel/openai] output stamping failed:', err);
@@ -293,7 +319,7 @@ function stampOutputAttributes(
   span: Span,
   body: OpenAIChatCompletionParams,
   resp: OpenAIChatCompletionResponse,
-  costs: Record<string, { input: number; output: number; cached?: number }>,
+  pricing: PricingSource | undefined,
 ): void {
   const choice = resp.choices?.[0];
   if (!choice) return;
@@ -321,43 +347,17 @@ function stampOutputAttributes(
   if (resp.id)              span.setAttribute('llm.response.id',          resp.id);
   if (resp.model)           span.setAttribute('llm.response.model',       resp.model);
 
-  // Token counts
-  const u = resp.usage ?? {};
-  if (typeof u.prompt_tokens     === 'number') span.setAttribute('llm.token_count.prompt',     u.prompt_tokens);
-  if (typeof u.completion_tokens === 'number') span.setAttribute('llm.token_count.completion', u.completion_tokens);
-  if (typeof u.total_tokens      === 'number') span.setAttribute('llm.token_count.total',      u.total_tokens);
-  const cached    = u.prompt_tokens_details?.cached_tokens;
-  const reasoning = u.completion_tokens_details?.reasoning_tokens;
-  if (typeof cached    === 'number' && cached    > 0) span.setAttribute('llm.token_count.prompt_details.cache_read', cached);
-  if (typeof reasoning === 'number' && reasoning > 0) span.setAttribute('llm.token_count.completion_details.reasoning', reasoning);
-
-  // Cost (best-effort; longest-prefix match so dated suffixes hit the base entry)
-  const rate = body.model ? lookupCost(body.model, costs) : undefined;
-  if (rate) {
-    const promptCost     = (u.prompt_tokens ?? 0) * rate.input;
-    const cachedCost     = rate.cached && cached ? cached * rate.cached : 0;
-    const completionCost = (u.completion_tokens ?? 0) * rate.output;
-    const total = promptCost + cachedCost + completionCost;
-    span.setAttribute('llm.cost.total', Number(total.toFixed(8)));
-  }
-}
-
-/**
- * OpenAI ships date-suffixed model IDs (`gpt-5.5-2026-04-23`). Match the
- * longest prefix in our cost table so a date-pinned id falls back to its
- * base model price. Override exact ids by passing `costPerToken` on
- * `instrument()`.
- */
-function lookupCost(
-  model: string,
-  costs: Record<string, { input: number; output: number; cached?: number }>,
-): { input: number; output: number; cached?: number } | undefined {
-  if (costs[model]) return costs[model];
-  const prefixes = Object.keys(costs).sort((a, b) => b.length - a.length);
-  for (const p of prefixes) {
-    if (model.startsWith(p)) return costs[p];
-  }
-  return undefined;
+  // Token + cost attrs via the cost module. extractors.openai handles
+  // the OpenAI-specific cached-subtraction (prompt_tokens is GROSS;
+  // LLMUsage.input_tokens is the UNCACHED portion). recordLLMCall
+  // dual-emits OpenInference + OTel-GenAI attribute names. When
+  // `pricing` is undefined cost is simply omitted from the span;
+  // token counts still flow.
+  const usage = extractors.openai(resp.usage);
+  const cost = pricing && body.model
+    ? calculateCost(body.model, usage, pricing)
+    : undefined;
+  recordLLMCall(span, { usage, cost });
 }
 
 function flattenContent(content: unknown): string {

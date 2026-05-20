@@ -1,6 +1,6 @@
 {
   "name": "agent-otel",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "description": "The OTel router for agent telemetry. Fanout to any eval, training, observability, or archival sink.",
   "license": "MIT",
   "type": "module",
