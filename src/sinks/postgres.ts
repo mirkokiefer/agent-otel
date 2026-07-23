@@ -394,6 +394,12 @@ const SELECT_COLS = `
 // Sink
 // ---------------------------------------------------------------------------
 
+const NUL_RE = /\u0000/g;
+// A high surrogate not followed by a low, or a low not preceded by a high
+// (from slicing mid-code-point or lossy decoding upstream).
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const REPLACEMENT = '\uFFFD';
+
 export function postgres(opts: PostgresSinkOptions): Sink & Inspectable {
   if (!opts.query && !opts.url) {
     throw new Error('[agent-otel/sinks/postgres] requires either `query` or `url`');
@@ -432,6 +438,46 @@ export function postgres(opts: PostgresSinkOptions): Sink & Inspectable {
     return queryFn;
   }
 
+  // Postgres cannot store U+0000 in any text-derived type (values are
+  // NUL-terminated C strings internally), and jsonb additionally rejects
+  // lone UTF-16 surrogates — both raise "unsupported Unicode escape
+  // sequence" at write time. Span attributes routinely carry tool output
+  // (PDF text extraction over broken fonts is a real-world NUL source), so
+  // normalize with U+FFFD — the Unicode replacement character for
+  // unrepresentable input — instead of losing the whole batch.
+  function pgSafeText(s: string): string {
+    return s.replace(NUL_RE, REPLACEMENT).replace(LONE_SURROGATE_RE, REPLACEMENT);
+  }
+
+  function pgSafeValue(value: unknown): unknown {
+    if (typeof value === 'string') {
+      const safe = pgSafeText(value);
+      return safe === value ? value : safe;
+    }
+    if (Array.isArray(value)) {
+      let out: unknown[] | null = null;
+      for (let i = 0; i < value.length; i++) {
+        const safe = pgSafeValue(value[i]);
+        if (safe !== value[i]) { out ??= value.slice(); out[i] = safe; }
+      }
+      return out ?? value;
+    }
+    if (value && typeof value === 'object' && !(value instanceof Date)) {
+      let out: Record<string, unknown> | null = null;
+      for (const [k, v] of Object.entries(value)) {
+        const sk = pgSafeText(k);
+        const sv = pgSafeValue(v);
+        if (sk !== k || sv !== v) {
+          out ??= { ...(value as Record<string, unknown>) };
+          if (sk !== k) delete out[k];
+          out[sk] = sv;
+        }
+      }
+      return out ?? value;
+    }
+    return value;
+  }
+
   function buildInsertSql(rows: Array<Record<string, unknown>>): { sql: string; params: unknown[] } {
     if (rows.length === 0) return { sql: '', params: [] };
 
@@ -455,10 +501,10 @@ export function postgres(opts: PostgresSinkOptions): Sink & Inspectable {
         // without it, `||` would treat the parameter as text and concat
         // string-wise instead of merging objects.
         if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-          params.push(value);
+          params.push(pgSafeValue(value));
           placeholders.push(`$${params.length}::jsonb`);
         } else {
-          params.push(value ?? null);
+          params.push(pgSafeValue(value ?? null));
           placeholders.push(`$${params.length}`);
         }
       }
